@@ -4,10 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: 'Runner'
-        required: true
-        type: string
-        default: 'self-hosted' # ubuntu-latest
+        description: 'Runner Label'
+        required: false
+        default: 'self-hosted' 
   schedule:
     - cron: '0 0 */16 * *'
 
@@ -16,50 +15,61 @@ permissions:
 
 jobs:
   build:
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'self-hosted' }}
+    runs-on: ${{ inputs.runner || 'self-hosted' }}
+    
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
         with:
-          submodules: true
-      
-      - name: Update 
+          submodules: recursive 
+          fetch-depth: 0
+
+      - name: Update Sources (Vanadium & Helium)
         run: |
+          echo ">>> Actualizando Vanadium..."
           cd vanadium
           git fetch --tags
-          git checkout $(git tag | sort -V | tail -n1)
+          LATEST_VANADIUM=$(git tag | sort -V | tail -n1)
+          git checkout $LATEST_VANADIUM
+          echo "Vanadium version: $LATEST_VANADIUM"
           cd ..
-          git add vanadium
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          if ! git diff --staged --quiet; then
-            git commit -am "update"
-            git push
-          fi
+
+          echo ">>> Actualizando Helium..."
+          cd helium
+          git fetch origin
+          git checkout main || git checkout master
+          git pull origin main || git pull origin master
+          cd ..
 
       - name: Set ENV
         run: | 
           chmod +x *.sh
           echo "unix_time=$(date +%s)" >> $GITHUB_ENV
-    
+      
       - name: Build
         env:
             DEBIAN_FRONTEND: noninteractive
-            LOCAL_TEST_JKS: ${{ secrets.LOCAL_TEST_JKS }}
+            LOCAL_TEST_JKS: ${{ secrets.LOCAL_TEST_JKS }} 
             STORE_TEST_JKS: ${{ secrets.STORE_TEST_JKS }}
         run: |
           ./build.sh
 
-      - name: Set
+      - name: Identify Output
         run: |
-          export VERSION=$(find chromium/src/out/Default/apks/release -name '*.apk' | sed 's/.*\///;s/\.apk$//')
+          APK_PATH=$(find chromium/src/out/Default/apks/release -name 'Chrome*.apk' | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: No se encontró el APK."
+            exit 1
+          fi
+          VERSION=$(basename "$APK_PATH" .apk)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          mv $(find chromium/src/out/Default/apks/release -name '*.apk') $VERSION-${{ env.unix_time }}.apk
+          mv "$APK_PATH" "Helium-$VERSION-arm64.apk"
 
-      - name: Publish
-        uses: softprops/action-gh-release@v2
+      - name: Publish Release
+        uses: softprops/action-gh-release@v1
+        if: success()
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          name: v${{ env.VERSION }}
-          tag_name: v${{ env.VERSION }}
+          tag_name: v${{ env.VERSION }}-${{ env.unix_time }}
+          name: Helium v${{ env.VERSION }} (ARM64)
           files: |
-            ${{ env.VERSION }}-${{ env.unix_time }}.apk
+            Helium-$VERSION-arm64.apk
