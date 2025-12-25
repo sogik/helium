@@ -8,7 +8,7 @@ on:
         required: false
         default: 'self-hosted' 
   schedule:
-    - cron: '0 0 */16 * *'
+    - cron: '0 0 */3 * *'
 
 permissions:
   contents: write
@@ -20,10 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive 
+          submodules: recursive
           fetch-depth: 0
 
-      - name: Update Sources (Vanadium & Helium)
+      - name: Update Sources (Force Sync)
         run: |
           echo ">>> Actualizando Vanadium..."
           cd vanadium
@@ -35,9 +35,13 @@ jobs:
 
           echo ">>> Actualizando Helium..."
           cd helium
+          git remote set-url origin https://github.com/imputnet/helium.git
           git fetch origin
           git checkout main || git checkout master
-          git pull origin main || git pull origin master
+          git reset --hard origin/main
+          
+          echo "Helium actualizado al commit:"
+          git rev-parse HEAD
           cd ..
 
       - name: Set ENV
