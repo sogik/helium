@@ -3,22 +3,15 @@ source common.sh
 
 set_keys
 sudo apt-get clean
-sudo rm -rf /var/lib/apt/lists/*
 
 export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
 
-ARCH=$(uname -m)
-if [ "$ARCH" = "aarch64" ]; then
-    echo ">>> Detectado sistema ARM64 (Oracle Cloud Ampere)"
-    sudo apt update
-    sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
-        build-essential python3-dev libncurses5 openjdk-17-jdk-headless
-else
-    sudo apt update
-    sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow
-fi
+echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
+sudo apt update
+sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
+    build-essential python3-dev libncurses5 openjdk-17-jdk-headless
 
 if [ ! -d "depot_tools" ]; then
     git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
@@ -54,31 +47,30 @@ EOF
 git submodule foreach git config -f ./.git/config submodule.$name.ignore all
 git config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
 
-
 replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "HELIUM"
 replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Helium"
 replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "helium"
 
-echo ">>> Aplicando parches base de Vanadium..."
+echo ">>> Aplicando parches Vanadium..."
 git am --whitespace=nowarn --keep-non-patch $SCRIPT_DIR/vanadium/patches/*.patch
 
-echo ">>> Sincronizando dependencias de Chromium..."
+echo ">>> Sincronizando dependencias..."
 gclient sync -D --no-history --nohooks
 gclient runhooks
 
 rm -rf third_party/angle/third_party/VK-GL-CTS/
 ./build/install-build-deps.sh --android --no-prompt
 
-echo ">>> Ejecutando scripts de identidad de Helium..."
+echo ">>> Transformando a Helium..."
 python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t .
-python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || echo "Advertencia: Script de versión falló o no encontró tags."
+python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || echo "Advertencia versión"
 python3 "${SCRIPT_DIR}/helium/utils/generate_resources.py" "${SCRIPT_DIR}/helium/resources/generate_resources.txt" "${SCRIPT_DIR}/helium/resources"
 python3 "${SCRIPT_DIR}/helium/utils/replace_resources.py" "${SCRIPT_DIR}/helium/resources/helium_resources.txt" "${SCRIPT_DIR}/helium/resources" .
 
-echo ">>> Aplicando parches específicos de Helium..."
+echo ">>> Aplicando parches Helium..."
 if [ -d "$SCRIPT_DIR/helium/patches" ]; then
     for patch in $SCRIPT_DIR/helium/patches/*.patch; do
-        git apply --reject --whitespace=fix "$patch" || echo "CONFLICTO PARCIAL: $patch (revisar archivos .rej)"
+        git apply --reject --whitespace=fix "$patch" || echo "⚠️ Conflicto parcial en $patch"
     done
 fi
 
@@ -101,7 +93,7 @@ chrome_public_manifest_package = "io.github.jqssun.helium"
 is_desktop_android = true 
 target_os = "android"
 target_cpu = "arm64"
-host_cpu = "arm64" 
+host_cpu = "arm64"  # CRÍTICO: Indica que compilamos DESDE un ARM
 
 is_component_build = false
 is_debug = false
@@ -121,7 +113,6 @@ google_api_key = "x"
 google_default_client_id = "x"
 google_default_client_secret = "x"
 
-# Gestión de Memoria (24GB permite 2 enlaces simultáneos seguros)
 concurrent_links = 2
 use_debug_fission=true
 use_errorprone_java_compiler=false
@@ -134,12 +125,11 @@ include_both_v8_snapshots_android_secondary_abi = false
 generate_linker_map = false
 EOF
 
-echo ">>> Iniciando compilación con Ninja..."
+echo ">>> Compilando con Ninja..."
 gn gen out/Default
 autoninja -C out/Default chrome_public_apk
 
 export PATH=$PWD/third_party/jdk/current/bin/:$PATH
 export ANDROID_HOME=$PWD/third_party/android_sdk/public
 mkdir -p out/Default/apks/release
-
 sign_apk $(find out/Default/apks -name 'Chrome*.apk') out/Default/apks/release/$VERSION.apk
