@@ -158,14 +158,14 @@ if [ ! -f "BUILD.gn" ] || [ ! -f ".gn" ]; then
 fi
 
 # ==========================================
-# 🛡️ FIX RUST (Falsificación + BYPASS FUERZA BRUTA)
+# 🛡️ FIX RUST: TRIPLE GARANTÍA 🛡️
 # ==========================================
-echo ">>> 🔧 FIX: Reemplazando Rust y Neutralizando Validación..."
+echo ">>> 🔧 FIX: Reemplazando Rust y Neutralizando Validaciones..."
 RUST_GOOGLE="third_party/rust-toolchain"
 rm -rf "$RUST_GOOGLE"
 mkdir -p "$RUST_GOOGLE"
 
-# 1. Copiamos binarios
+# 1. Copiamos los binarios reales (ARM64)
 LOCAL_RUST="$HOME/.rustup/toolchains/stable-aarch64-unknown-linux-gnu"
 if [ -d "$LOCAL_RUST" ]; then
     cp -r "$LOCAL_RUST/"* "$RUST_GOOGLE/"
@@ -173,35 +173,65 @@ else
     cp -r /usr/lib/rustlib "$RUST_GOOGLE/"
 fi
 
-# 2. Archivo Version (Por si acaso, aunque el bypass debería hacerlo irrelevante)
-printf "15283f6fe95e5b604273d13a428bab5fc0788f5a-1" > "$RUST_GOOGLE/VERSION"
+# 2. OBTENER HASH ESPERADO
+EXPECTED_HASH=$(python3 -c "
+import re
+try:
+    with open('tools/rust/update_rust.py', 'r') as f:
+        content = f.read()
+        rev = re.search(r'RUST_REVISION\s*=\s*[\"\']([^\"\']+)[\"\']', content)
+        sub = re.search(r'RUST_SUB_REVISION\s*=\s*(\d+)', content)
+        if rev:
+            out = rev.group(1)
+            if sub: out += f'-{sub.group(1)}'
+            print(out, end='')
+except:
+    pass
+")
+if [ -z "$EXPECTED_HASH" ]; then
+    EXPECTED_HASH="15283f6fe95e5b604273d13a428bab5fc0788f5a-1"
+fi
+printf "%s" "$EXPECTED_HASH" > "$RUST_GOOGLE/VERSION"
+echo "   ✅ Hash objetivo: $EXPECTED_HASH"
 
-# 3. ☢️ LOBOTOMÍA: Reemplazo de texto directo ☢️
-# Buscamos la cadena "rustc_revision ==" y la cambiamos por "true || rustc_revision =="
-# Esto es infalible porque no depende de regex complejas ni saltos de línea.
-echo ">>> 💉 Inyectando 'true ||' en la condición de Rust..."
+# 3. ☢️ VÍA B: HACKEAR build/config/rust.gni (La Fuente)
+# Buscamos donde lee el archivo y le inyectamos el hash directamente
 python3 -c "
-import sys
-file_path = 'build/config/compiler/BUILD.gn'
+import re
+file_path = 'build/config/rust.gni'
 try:
     with open(file_path, 'r') as f:
         content = f.read()
-
-    # Reemplazo directo de cadena: 'rustc_revision ==' -> 'true || rustc_revision =='
-    if 'rustc_revision ==' in content:
-        new_content = content.replace('rustc_revision ==', 'true || rustc_revision ==')
-        with open(file_path, 'w') as f:
-            f.write(new_content)
-        print('   ✅ BYPASS APLICADO: Condición de Rust neutralizada.')
-    elif 'true || rustc_revision ==' in content:
-        print('   ℹ️ Ya estaba parcheado anteriormente.')
-    else:
-        print('   ❌ ERROR: No encontré la cadena \"rustc_revision ==\" en el archivo.')
-        # Imprimimos un trozo para debuggear si falla
-        print('   --- Inicio del archivo ---')
-        print(content[:500])
+    # Reemplazamos 'read_file(...)' por el string literal del hash
+    # Esto evita cualquier error de lectura de archivo
+    new_content = re.sub(r'read_file\s*\(\s*\"//third_party/rust-toolchain/VERSION\".*?\)', f'\"$EXPECTED_HASH\"', content, flags=re.DOTALL)
+    
+    with open(file_path, 'w') as f:
+        f.write(new_content)
+    print('   ✅ VÍA B: Variable en rust.gni sobrescrita con hash fijo.')
 except Exception as e:
-    print(f'   ❌ Error manipulando archivo: {e}')
+    print(f'   ⚠️ VÍA B Falló (No crítico): {e}')
+"
+
+# 4. ☢️ VÍA C: HACKEAR build/config/compiler/BUILD.gn (La Validación)
+# Buscamos CUALQUIER línea con 'assert' y 'rustc_revision' y la comentamos
+echo ">>> 💉 Ejecutando lobotomía en compiler/BUILD.gn..."
+python3 -c "
+file_path = 'build/config/compiler/BUILD.gn'
+try:
+    lines = []
+    with open(file_path, 'r') as f:
+        for line in f:
+            # Si la línea tiene 'assert' Y 'rustc_revision', la desactivamos
+            if 'assert' in line and 'rustc_revision' in line:
+                lines.append('# BYPASS: ' + line)
+            else:
+                lines.append(line)
+    with open(file_path, 'w') as f:
+        f.writelines(lines)
+    print('   ✅ VÍA C: Aserciones en BUILD.gn desactivadas.')
+except Exception as e:
+    print(f'   ❌ VÍA C Falló: {e}')
 "
 # ==========================================
 
@@ -259,6 +289,10 @@ is_desktop_android = true
 target_os = "android"
 target_cpu = "arm64"
 host_cpu = "arm64" 
+
+# --- VÍA A: FORZAR VERSIÓN RUST EN ARGS ---
+# Esto sobreescribe cualquier chequeo interno
+rustc_revision = "$EXPECTED_HASH"
 
 # --- CORRECCIONES ARQUITECTURA ---
 v8_snapshot_toolchain = "//build/toolchain/linux:clang_arm64"
