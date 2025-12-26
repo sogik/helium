@@ -158,7 +158,7 @@ if [ ! -f "BUILD.gn" ] || [ ! -f ".gn" ]; then
 fi
 
 # ==========================================
-# 🛡️ FIX RUST (SPOOFING DE VERSIÓN)
+# 🛡️ FIX RUST (SPOOFING DE VERSIÓN MEJORADO)
 # ==========================================
 echo ">>> 🔧 FIX: Reemplazando y Falsificando Rust..."
 RUST_GOOGLE="third_party/rust-toolchain"
@@ -173,17 +173,30 @@ else
     cp -r /usr/lib/rustlib "$RUST_GOOGLE/"
 fi
 
-# 2. 🕵️ FALSIFICACIÓN DE IDENTIDAD
-# Buscamos qué versión exacta espera Chromium leyendo su propio script
-EXPECTED_HASH=$(grep -r "RUST_REVISION =" tools/rust/update_rust.py | cut -d"'" -f2)
+# 2. 🕵️ FALSIFICACIÓN DE IDENTIDAD CON PYTHON (MÁS PRECISO)
+# Usamos Python para extraer la variable RUST_REVISION exacta, incluyendo el "-1" si existe
+EXPECTED_HASH=$(python3 -c "
+import re
+try:
+    with open('tools/rust/update_rust.py', 'r') as f:
+        content = f.read()
+        # Busca RUST_REVISION = '...' o \"...\"
+        match = re.search(r'RUST_REVISION\s*=\s*[\"\']([^\"\']+)[\"\']', content)
+        if match:
+            print(match.group(1))
+        else:
+            print('')
+except:
+    print('')
+")
 
 if [ -z "$EXPECTED_HASH" ]; then
-    # Fallback si no podemos leer el archivo (Backup basado en tu error anterior)
+    echo "⚠️ No pude leer update_rust.py. Usando valor de respaldo..."
     EXPECTED_HASH="15283f6fe95e5b604273d13a428bab5fc0788f5a-1"
 fi
 
 echo "$EXPECTED_HASH" > "$RUST_GOOGLE/VERSION"
-echo "   ✅ Rust falsificado con hash: $EXPECTED_HASH"
+echo "   ✅ Rust falsificado con hash exacto: $EXPECTED_HASH"
 # ==========================================
 
 
