@@ -6,13 +6,6 @@ set_keys
 sudo apt-get clean
 ulimit -n 4096
 
-# --- GPS: DEFINICIÓN DE RUTAS ABSOLUTAS ---
-# Guardamos dónde empieza todo para no perdernos
-BUILD_ROOT="$(pwd)"
-SRC_DIR="$BUILD_ROOT/chromium/src"
-echo ">>> 📍 Directorio Raíz: $BUILD_ROOT"
-echo ">>> 📍 Directorio Fuentes: $SRC_DIR"
-
 export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
@@ -34,7 +27,6 @@ tar -xf node-v20.10.0-linux-arm64.tar.xz
 sudo cp -r node-v20.10.0-linux-arm64/{bin,include,lib,share} /usr/local/
 sudo ln -sf /usr/local/bin/node /usr/bin/node
 sudo ln -sf /usr/local/bin/npm /usr/bin/npm
-cd "$BUILD_ROOT" # Volvemos a casa
 
 # B. INSTALACIÓN MANUAL RUST
 echo ">>> 🔨 INSTALANDO RUSTUP (Oficial)..."
@@ -43,20 +35,33 @@ source "$HOME/.cargo/env"
 rustup toolchain install stable-aarch64-unknown-linux-gnu
 rustup default stable-aarch64-unknown-linux-gnu
 
+# C. INSTALACIÓN GN OFICIAL (ARM64) - Esto lo hacemos en /tmp para no perdernos
+echo ">>> 🔨 INSTALANDO GN ARM64..."
+wget -O gn_arm64.zip "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-arm64/+/latest"
+unzip -o gn_arm64.zip
+sudo mv gn /usr/local/bin/gn
+sudo chmod +x /usr/local/bin/gn
+rm gn_arm64.zip
+
 echo "✅ Versiones Sistema:"
 echo "Node: $(node -v)"
 echo "Rust: $(rustc --version)"
 echo "Ninja: $(ninja --version)"
+echo "GN: $(gn --version)"
 echo "Clang: $(clang --version | head -n 1)"
 
-# --- 3. DEPOT TOOLS ---
+# --- 3. RECUPERACIÓN DE RUTA (CRÍTICO) ---
+# Volvemos al directorio de trabajo original del Runner
+cd "/home/ubuntu/actions-runner/actions-runner/_work/helium/helium" || echo "⚠️ No pude volver al dir original, buscando..."
+
+# --- 4. DEPOT TOOLS ---
 if [ ! -d "depot_tools" ]; then
     git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
 fi
 export PATH="$PWD/depot_tools:$PATH"
 export DEPOT_TOOLS_Metrics=0
 
-# --- 4. DESCARGA CHROMIUM ---
+# --- 5. DESCARGA CHROMIUM ---
 mkdir -p chromium/src/out/Default; cd chromium
 gclient root; cd src
 git init
@@ -85,18 +90,17 @@ EOF
 git submodule foreach git config -f ./.git/config submodule.$name.ignore all
 git config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
 
-# --- 5. PARCHEO ---
-# Volvemos a la raíz para asegurar que SCRIPT_DIR funciona
-cd "$BUILD_ROOT"
-
+# --- 6. PARCHEO ---
+# Volvemos atrás para referenciar patches
+cd ../.. 
 replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "HELIUM"
 replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Helium"
 replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "helium"
 
-# Entramos a SRC para aplicar parches
-cd "$SRC_DIR"
+# Entramos a SRC
+cd chromium/src
 echo ">>> Aplicando parches Vanadium..."
-git am --whitespace=nowarn --keep-non-patch $SCRIPT_DIR/vanadium/patches/*.patch || echo "⚠️ Algunos parches ya estaban aplicados"
+git am --whitespace=nowarn --keep-non-patch $SCRIPT_DIR/vanadium/patches/*.patch || echo "⚠️ Parches ya aplicados"
 
 echo ">>> Sincronizando dependencias..."
 gclient sync -D --no-history --nohooks
@@ -108,23 +112,19 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 
-# Instalación de dependencias
+# Instalación de dependencias (Bypass error)
 ./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia en dependencias Google"
 
 # ==========================================
-# 🛡️ ZONA DE REEMPLAZO DE HERRAMIENTAS (FIX MASIVO)
+# 🛡️ ZONA DE REEMPLAZO DE HERRAMIENTAS
 # ==========================================
-cd "$SRC_DIR" || exit 1 # Aseguramos estar en src
-
-# 1. FIX NODE.JS
-echo ">>> 🔧 FIX: Reemplazando Node.js..."
+# FIX NODE.JS
 NODE_INTERNAL="third_party/node/linux/node-linux-x64/bin/node"
 mkdir -p "$(dirname "$NODE_INTERNAL")"
 rm -f "$NODE_INTERNAL"
 ln -sf /usr/local/bin/node "$NODE_INTERNAL"
 
-# 2. FIX RUST
-echo ">>> 🔧 FIX: Reemplazando Rust..."
+# FIX RUST
 RUST_GOOGLE="third_party/rust-toolchain"
 rm -rf "$RUST_GOOGLE"
 mkdir -p "$RUST_GOOGLE"
@@ -135,80 +135,59 @@ else
     cp -r /usr/lib/rustlib "$RUST_GOOGLE/"
 fi
 
-# 3. FIX GN (DESCARGA OFICIAL ARM64)
-echo ">>> 🔧 FIX: Instalando GN oficial (ARM64)..."
-GN_PATH="buildtools/linux64/gn"
-GN_URL="https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-arm64/+/latest"
-
-rm -f "$GN_PATH"
-mkdir -p "buildtools/linux64"
-wget -O gn_arm64.zip "$GN_URL"
-unzip -o gn_arm64.zip -d buildtools/linux64/
-chmod +x "$GN_PATH"
-rm gn_arm64.zip
-echo "   ✅ GN ARM64 oficial instalado."
-
-# 4. FIX NINJA
-echo ">>> 🔧 FIX: Verificando Ninja..."
-NINJA_GOOGLE="third_party/ninja/ninja"
-if [ -f "$NINJA_GOOGLE" ]; then
-    if file "$NINJA_GOOGLE" | grep -q "x86-64"; then
-        echo "   ⚠️ Ninja incompatible. Reemplazando..."
-        rm -f "$NINJA_GOOGLE"
-        ln -sf /usr/bin/ninja "$NINJA_GOOGLE"
-    else
-        echo "   ✅ Ninja compatible."
-    fi
-fi
-
-# 5. FIX CLANG
-echo ">>> 🔧 FIX: Verificando Clang..."
+# FIX CLANG
 LLVM_BIN_DIR="third_party/llvm-build/Release+Asserts/bin"
 CLANG_GOOGLE="$LLVM_BIN_DIR/clang"
-
 if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
-    echo "   ⚠️ ALERTA: Clang incompatible. Trasplantando..."
     rm -f "$LLVM_BIN_DIR/clang"
     rm -f "$LLVM_BIN_DIR/clang++"
     rm -f "$LLVM_BIN_DIR/lld"
     ln -sf /usr/bin/clang "$LLVM_BIN_DIR/clang"
     ln -sf /usr/bin/clang++ "$LLVM_BIN_DIR/clang++"
     ln -sf /usr/bin/lld "$LLVM_BIN_DIR/lld"
-    echo "   ✅ Trasplante de Clang completado."
-else
-    echo "   ✅ Clang parece correcto."
 fi
 # ==========================================
 
+# ⚠️ NAVEGACIÓN INTELIGENTE: BUSCAR EL CÓDIGO ⚠️
+echo ">>> 🕵️ Buscando el archivo .gn para ubicar la raíz REAL..."
+# Buscamos el archivo .gn en el directorio actual o subdirectorios
+ACTUAL_SRC=$(find . -maxdepth 4 -name ".gn" -type f -print -quit | xargs dirname)
+
+if [ -z "$ACTUAL_SRC" ]; then
+    # Intento de emergencia: buscar desde el home del runner
+    ACTUAL_SRC=$(find /home/ubuntu/actions-runner -maxdepth 6 -name ".gn" -type f -print -quit | xargs dirname)
+fi
+
+if [ -z "$ACTUAL_SRC" ]; then
+    echo "❌ CRÍTICO: No encuentro el código fuente de Chromium. Abortando."
+    pwd
+    ls -F
+    exit 1
+fi
+
+cd "$ACTUAL_SRC"
+echo ">>> 📍 Localizado y entrando en: $(pwd)"
+
 echo ">>> Transformando a Helium..."
-# ⚠️ NAVEGACIÓN CRÍTICA: Aseguramos estar en src
-cd "$SRC_DIR" || exit 1
-echo "📂 Directorio actual: $(pwd)"
-
-# NOTA: Añadimos "|| true" para que no falle si ya se parcheó antes (clean: false)
-python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t . || echo "⚠️ Paso omitido: Nombre ya sustituido o error leve"
-
-python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || echo "⚠️ Paso omitido: Versión ya aplicada"
-
-python3 "${SCRIPT_DIR}/helium/utils/generate_resources.py" "${SCRIPT_DIR}/helium/resources/generate_resources.txt" "${SCRIPT_DIR}/helium/resources" || echo "⚠️ Error generando recursos (quizás ya existen)"
-
-python3 "${SCRIPT_DIR}/helium/utils/replace_resources.py" "${SCRIPT_DIR}/helium/resources/helium_resources.txt" "${SCRIPT_DIR}/helium/resources" . || echo "⚠️ Error reemplazando recursos (quizás ya existen)"
+# Usamos || true para ignorar errores si ya se ejecutó
+python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t . || true
+python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || true
+python3 "${SCRIPT_DIR}/helium/utils/generate_resources.py" "${SCRIPT_DIR}/helium/resources/generate_resources.txt" "${SCRIPT_DIR}/helium/resources" || true
+python3 "${SCRIPT_DIR}/helium/utils/replace_resources.py" "${SCRIPT_DIR}/helium/resources/helium_resources.txt" "${SCRIPT_DIR}/helium/resources" . || true
 
 echo ">>> Aplicando parches Helium..."
 if [ -d "$SCRIPT_DIR/helium/patches" ]; then
     shopt -s nullglob
     for patch in $SCRIPT_DIR/helium/patches/*.patch; do
-        git apply --reject --whitespace=fix "$patch" || echo "⚠️ Conflicto parcial en $patch (Probablemente ya aplicado)"
+        git apply --reject --whitespace=fix "$patch" || echo "⚠️ Ya aplicado"
     done
     shopt -u nullglob
 fi
 
-# Hacks UI - Verificamos que el archivo existe antes de tocarlo
+# Hacks UI - Rutas relativas ahora funcionarán porque estamos en SRC
 if [ -f "extensions/common/extension_features.cc" ]; then
     sed -i 's/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
     sed -i 's/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
-else
-    echo "⚠️ No se encuentra extension_features.cc, saltando hack."
 fi
 
 if [ -f "chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml" ]; then
@@ -220,15 +199,13 @@ if [ -f "chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml" ];
             android:layout_width="wrap_content"\
             android:layout_height="match_parent" />
 }' chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml
-else
-     echo "⚠️ No se encuentra toolbar_phone.xml, saltando hack."
 fi
 
 if [ -f "chrome/browser/ui/android/extensions/java/res/values/dimens.xml" ]; then
     sed -i 's/extension_toolbar_baseline_width">600dp/extension_toolbar_baseline_width">0dp/' chrome/browser/ui/android/extensions/java/res/values/dimens.xml
 fi
 
-# --- 6. CONFIGURACIÓN GN + CCACHE ---
+# --- 7. CONFIGURACIÓN GN + CCACHE ---
 export CCACHE_DIR=/home/$(whoami)/.ccache
 mkdir -p $CCACHE_DIR
 export CCACHE_MAXSIZE=30G 
@@ -292,11 +269,16 @@ enable_dav1d_decoder=true
 generate_linker_map = false
 EOF
 
-# --- 7. COMPILAR Y FIRMAR ---
+# --- 8. COMPILAR Y FIRMAR ---
 echo ">>> Compilando con Ninja (Classic)..."
-# Aseguramos estar en el directorio correcto y con el PATH bien
-cd "$SRC_DIR" || exit 1
+# PATH Forzado
 export PATH=$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH
+
+# Verificación final antes de disparar
+if [ ! -f "out/Default/args.gn" ]; then
+    echo "❌ ERROR CRÍTICO: args.gn no existe en $(pwd)/out/Default"
+    exit 1
+fi
 
 gn gen out/Default
 ninja -C out/Default chrome_public_apk
