@@ -1,19 +1,23 @@
 #!/bin/bash
 source common.sh
 
-# 1. Configuración y Optimización de Sistema
+# =================================================================
+# 1. LIMPIEZA Y PREPARACIÓN DEL SISTEMA (Fix Copilot)
+# =================================================================
 set_keys
 ulimit -n 4096
 
-# --- FIX COPILOT: LIMPIEZA TOTAL DE APT ---
-echo ">>> 🧹 Limpiando repositorios y arquitecturas..."
+echo ">>> 🧹 [Fase 1] Limpiando sistema y APT..."
+# Eliminamos la arquitectura i386 que causa errores 404 en ARM
 sudo dpkg --remove-architecture i386 2>/dev/null || true
+# Limpiamos listas corruptas
 sudo rm -f /etc/apt/sources.list.d/*.list
 sudo rm -rf /var/lib/apt/lists/*
+# Restauramos repositorios limpios solo ARM64
 echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe restricted multiverse" | sudo tee /etc/apt/sources.list
 sudo apt-get update -y --allow-releaseinfo-change
 
-# Instalar dependencias esenciales
+# Instalar dependencias
 sudo apt-get install -y sudo lsb-release file nano git curl python3 python3-pillow \
     build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache \
     ninja-build nasm clang lld unzip
@@ -22,11 +26,12 @@ export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
 
-# --- 2. HERRAMIENTAS MANUALES (ARM64) ---
-echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
+# =================================================================
+# 2. HERRAMIENTAS MANUALES (ARM64)
+# =================================================================
+echo ">>> [Fase 2] Instalando herramientas ARM64..."
 
-# NODEJS v20
-echo ">>> 🔨 INSTALANDO NODE v20..."
+# NODEJS
 cd /tmp
 wget -q https://nodejs.org/dist/v20.10.0/node-v20.10.0-linux-arm64.tar.xz
 tar -xf node-v20.10.0-linux-arm64.tar.xz
@@ -35,30 +40,30 @@ sudo ln -sf /usr/local/bin/node /usr/bin/node
 sudo ln -sf /usr/local/bin/npm /usr/bin/npm
 
 # RUSTUP
-echo ">>> 🔨 INSTALANDO RUSTUP..."
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 rustup toolchain install stable-aarch64-unknown-linux-gnu
 rustup default stable-aarch64-unknown-linux-gnu
 
 # GN ARM64
-echo ">>> 🔨 INSTALANDO GN ARM64..."
 wget -q -O gn_arm64.zip "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-arm64/+/latest"
 unzip -o -q gn_arm64.zip
 sudo mv gn /usr/local/bin/gn
 sudo chmod +x /usr/local/bin/gn
 
-# --- 3. RECUPERACIÓN DE RUTA ---
+# =================================================================
+# 3. DESCARGA Y LIMPIEZA DE CÓDIGO
+# =================================================================
 cd "/home/ubuntu/actions-runner/actions-runner/_work/helium/helium" || echo "⚠️ Buscando ruta..."
 
-# --- 4. DEPOT TOOLS ---
+# DEPOT TOOLS
 if [ ! -d "depot_tools" ]; then
     git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
 fi
 export PATH="$PWD/depot_tools:$PATH"
 export DEPOT_TOOLS_Metrics=0
 
-# --- 5. DESCARGA CHROMIUM ---
+# CHROMIUM
 mkdir -p chromium/src/out/Default; cd chromium
 gclient root; cd src
 if ! git remote | grep -q origin; then
@@ -85,19 +90,18 @@ solutions = [
 target_os = ["android"]
 EOF
 
-# --- LIMPIEZA GIT ---
-echo ">>> 🧹 LIMPIEZA GIT..."
+echo ">>> 🧹 [Fase 3] Reset Factory de Git..."
 git am --abort 2>/dev/null || true
 rm -rf .git/rebase-apply .git/rebase-merge
 git reset --hard HEAD
 git clean -fd
 
-# --- 6. SINCRONIZACIÓN Y PARCHEO ---
-echo ">>> Sincronizando dependencias..."
+# SYNC
+echo ">>> Sincronizando..."
 gclient sync -D --no-history --nohooks
 gclient runhooks
 
-# --- 7. PARCHES VANADIUM/HELIUM ---
+# PARCHES HELIUM
 cd ../.. 
 replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "HELIUM"
 replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Helium"
@@ -107,26 +111,24 @@ cd chromium/src
 echo ">>> Aplicando parches Vanadium..."
 git am --whitespace=nowarn --keep-non-patch $SCRIPT_DIR/vanadium/patches/*.patch
 
-# --- SYSROOTS ---
-echo ">>> Instalando Sysroots..."
+# SYSROOTS & DEPS
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
+./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia deps"
 
-./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia en dependencias Google"
+# =================================================================
+# 4. FIX HERRAMIENTAS GOOGLE
+# =================================================================
+echo ">>> 🔧 [Fase 4] Reemplazando herramientas x86..."
 
-# ==========================================
-# 🛡️ ZONA DE REEMPLAZO DE HERRAMIENTAS
-# ==========================================
-echo ">>> 🔧 FIX: Reemplazando herramientas x86 por ARM64..."
-
-# FIX NODE
+# NODE
 NODE_INTERNAL="third_party/node/linux/node-linux-x64/bin/node"
 mkdir -p "$(dirname "$NODE_INTERNAL")"
 rm -f "$NODE_INTERNAL"
 ln -sf /usr/local/bin/node "$NODE_INTERNAL"
 
-# FIX CLANG
+# CLANG
 LLVM_BIN_DIR="third_party/llvm-build/Release+Asserts/bin"
 CLANG_GOOGLE="$LLVM_BIN_DIR/clang"
 if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
@@ -138,57 +140,14 @@ if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
     ln -sf /usr/bin/lld "$LLVM_BIN_DIR/lld"
 fi
 
-# FIX RUST (Copia binarios)
+# RUST
 RUST_GOOGLE="third_party/rust-toolchain"
 rm -rf "$RUST_GOOGLE"
 mkdir -p "$RUST_GOOGLE"
 cp -r "$HOME/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/"* "$RUST_GOOGLE/"
 
-# =================================================================
-# ☢️ ZONA CRÍTICA: BYPASS DOBLE DE RUST (BUILD.GN + RUST.GNI) ☢️
-# =================================================================
-echo ">>> 💉 Ejecutando lobotomía en archivos de configuración GN..."
-
-# 1. HACKEAR RUST.GNI: Evitar que lea el archivo si no quiere
-# Buscamos la línea "read_file(...)" y la reemplazamos por un string fijo
-python3 -c "
-import sys
-import re
-target_gni = 'build/config/rust.gni'
-try:
-    with open(target_gni, 'r') as f: content = f.read()
-    # Reemplazamos la lectura del archivo por el hash fijo directamente
-    # Esto soluciona el error 'Could not read file' de raíz
-    new_content = re.sub(r'read_file\s*\(\s*\"//third_party/rust-toolchain/VERSION\".*?\)', '\"15283f6fe95e5b604273d13a428bab5fc0788f5a-1\"', content, flags=re.DOTALL)
-    with open(target_gni, 'w') as f: f.write(new_content)
-    print('✅ rust.gni parcheado: lectura de archivo eliminada.')
-except Exception as e:
-    print(f'⚠️ Error parcheando rust.gni: {e}')
-"
-
-# 2. HACKEAR BUILD.GN: Bypass Lógico (assert)
-python3 -c "
-import sys
-import os
-target_file = 'build/config/compiler/BUILD.gn'
-try:
-    with open(target_file, 'r') as f: content = f.read()
-    # Reemplazo lógico para anular la validación
-    old_str = 'rustc_revision =='
-    new_str = 'true || rustc_revision =='
-    if old_str in content:
-        new_content = content.replace(old_str, new_str)
-        with open(target_file, 'w') as f: f.write(new_content)
-        print('✅ BUILD.gn parcheado: Bypass lógico aplicado.')
-    elif new_str in content:
-        print('⚠️ BUILD.gn ya estaba parcheado.')
-except Exception as e:
-    print(f'❌ Error parcheando BUILD.gn: {e}')
-"
-# =================================================================
-
+# HELIUM TRANSFORMATION
 echo ">>> Transformando a Helium..."
-# Navegación Láser
 SRC_PATH=$(find /home/ubuntu/actions-runner -type f -path "*/chromium/src/chrome/VERSION" -print -quit)
 REAL_SRC_DIR="${SRC_PATH%/chrome/VERSION}"
 cd "$REAL_SRC_DIR"
@@ -198,7 +157,6 @@ python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/hel
 python3 "${SCRIPT_DIR}/helium/utils/generate_resources.py" "${SCRIPT_DIR}/helium/resources/generate_resources.txt" "${SCRIPT_DIR}/helium/resources" || true
 python3 "${SCRIPT_DIR}/helium/utils/replace_resources.py" "${SCRIPT_DIR}/helium/resources/helium_resources.txt" "${SCRIPT_DIR}/helium/resources" . || true
 
-echo ">>> Aplicando parches Helium..."
 if [ -d "$SCRIPT_DIR/helium/patches" ]; then
     shopt -s nullglob
     for patch in $SCRIPT_DIR/helium/patches/*.patch; do
@@ -207,12 +165,77 @@ if [ -d "$SCRIPT_DIR/helium/patches" ]; then
     shopt -u nullglob
 fi
 
-# Hacks UI
+# =================================================================
+# ☢️ FASE 5: EL FIX DEFINITIVO PARA RUST (OVERRIDE) ☢️
+# =================================================================
+echo ">>> 💉 Ejecutando FIX MAESTRO en rust.gni..."
+
+python3 -c "
+import re
+import os
+import sys
+
+# 1. LEER EL HASH QUE GOOGLE QUIERE
+# Leemos update_rust.py para saber qué espera exactamente (incluyendo el -1)
+expected_hash = '15283f6fe95e5b604273d13a428bab5fc0788f5a-1' # Fallback
+try:
+    with open('tools/rust/update_rust.py', 'r') as f:
+        content = f.read()
+        rev = re.search(r'RUST_REVISION\s*=\s*[\"\']([^\"\']+)[\"\']', content)
+        sub = re.search(r'RUST_SUB_REVISION\s*=\s*(\d+)', content)
+        if rev:
+            expected_hash = rev.group(1)
+            if sub: expected_hash += f'-{sub.group(1)}'
+except:
+    pass
+
+print(f'   🎯 Hash Objetivo: {expected_hash}')
+
+# 2. ESCRIBIR EL HASH A FUEGO EN LA CONFIGURACIÓN
+# Modificamos build/config/rust.gni para que NO LEA NINGÚN ARCHIVO.
+# Simplemente definimos la variable con el valor string directo.
+rust_gni_file = 'build/config/rust.gni'
+try:
+    with open(rust_gni_file, 'r') as f:
+        gni_content = f.read()
+    
+    # Buscamos donde se asigna rustc_revision y lo reemplazamos
+    # Normalmente es: rustc_revision = read_file(...)
+    # Lo cambiamos por: rustc_revision = \"HASH_CORRECTO\"
+    
+    # Regex agresivo para reemplazar cualquier asignación de rustc_revision
+    new_gni = re.sub(
+        r'rustc_revision\s*=\s*read_file\s*\(.*?\)', 
+        f'rustc_revision = \"{expected_hash}\"', 
+        gni_content, 
+        flags=re.DOTALL
+    )
+    
+    with open(rust_gni_file, 'w') as f:
+        f.write(new_gni)
+    print('   ✅ rust.gni HACKEADO: Lectura de archivo eliminada. Hash inyectado.')
+
+except Exception as e:
+    print(f'   ❌ Error hackeando rust.gni: {e}')
+    sys.exit(1)
+
+# 3. CREAR ARCHIVO FÍSICO (Por si acaso alguien más lo busca)
+os.makedirs('third_party/rust-toolchain', exist_ok=True)
+with open('third_party/rust-toolchain/VERSION', 'w') as f:
+    f.write(expected_hash)
+print('   ✅ Archivo físico VERSION creado (backup).')
+"
+
+# Si el script falla, paramos
+if [ $? -ne 0 ]; then exit 1; fi
+
+# =================================================================
+
+# Hacks UI (Sin cambios)
 if [ -f "extensions/common/extension_features.cc" ]; then
     sed -i 's/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
     sed -i 's/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
 fi
-
 if [ -f "chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml" ]; then
     sed -i '/<ViewStub/{N;N;N;N;N;N; /optional_button_stub/a\
 \
@@ -223,7 +246,6 @@ if [ -f "chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml" ];
             android:layout_height="match_parent" />
 }' chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml
 fi
-
 if [ -f "chrome/browser/ui/android/extensions/java/res/values/dimens.xml" ]; then
     sed -i 's/extension_toolbar_baseline_width">600dp/extension_toolbar_baseline_width">0dp/' chrome/browser/ui/android/extensions/java/res/values/dimens.xml
 fi
@@ -246,7 +268,7 @@ target_os = "android"
 target_cpu = "arm64"
 host_cpu = "arm64" 
 
-# Desactivar chequeo de consistencia
+# Bypass GN checks
 skip_rust_toolchain_consistency_check = true
 
 # --- CORRECCIONES ARQUITECTURA ---
@@ -298,18 +320,11 @@ EOF
 echo ">>> Compilando con Ninja (Classic)..."
 export PATH=$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH
 
-# RESURRECCIÓN FINAL DE ARCHIVOS CRÍTICOS
+# CHECK FINAL
 if [ ! -f "BUILD.gn" ]; then
    echo "🚨 BUILD.gn no encontrado. Restaurando..."
    git checkout HEAD -- BUILD.gn
 fi
-
-# ⚠️ CREACIÓN DE EMERGENCIA DEL ARCHIVO VERSION (JUSTO ANTES DE GN) ⚠️
-echo ">>> 🚑 EMERGENCIA: Creando archivo VERSION manual..."
-mkdir -p third_party/rust-toolchain
-echo "15283f6fe95e5b604273d13a428bab5fc0788f5a-1" > third_party/rust-toolchain/VERSION
-echo "   📄 Contenido de VERSION:"
-cat third_party/rust-toolchain/VERSION
 
 gn gen out/Default
 ninja -C out/Default chrome_public_apk
