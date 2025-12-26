@@ -1,9 +1,12 @@
 #!/bin/bash
 source common.sh
 
-# 1. Configuración
+# 1. Configuración y Optimización de Sistema
 set_keys
 sudo apt-get clean
+
+# AUMENTAR LÍMITES DEL SISTEMA (Vital para compilación masiva)
+ulimit -n 4096
 
 export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
@@ -63,7 +66,7 @@ echo ">>> Sincronizando dependencias..."
 gclient sync -D --no-history --nohooks
 gclient runhooks
 
-# --- SYSROOTS (Para evitar el error de missing sysroot) ---
+# --- SYSROOTS ---
 echo ">>> Instalando Sysroots..."
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
@@ -113,13 +116,15 @@ target_os = "android"
 target_cpu = "arm64"
 host_cpu = "arm64" 
 
-# --- CORRECCIÓN CRÍTICA V8 PARA ORACLE ARM ---
-# Esto evita el error: "Do not know how to build a snapshot"
+# --- CORRECCIONES ARQUITECTURA ---
 v8_snapshot_toolchain = "//build/toolchain/linux:clang_arm64"
-
-# Desactivamos la parte de 32 bits para evitar conflictos y ahorrar RAM
 enable_android_secondary_abi = false
 include_both_v8_snapshots = false
+
+# --- MATAR SISO / ACTIVAR NINJA CLASSIC ---
+use_siso = false
+use_remoteexec = false
+use_goma = false
 
 # OPTIMIZACIONES
 cc_wrapper = "ccache"
@@ -154,9 +159,10 @@ generate_linker_map = false
 EOF
 
 # --- 7. COMPILAR Y FIRMAR ---
-echo ">>> Compilando con Ninja..."
+echo ">>> Compilando con Ninja (Classic)..."
 gn gen out/Default
-autoninja -C out/Default chrome_public_apk
+# CAMBIO: Usamos 'ninja' directo en lugar de 'autoninja' para evitar que lance Siso
+ninja -C out/Default chrome_public_apk
 
 # USAR JAVA DEL SISTEMA
 export ANDROID_HOME=$PWD/third_party/android_sdk/public
