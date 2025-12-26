@@ -16,17 +16,18 @@ export DEBIAN_FRONTEND=noninteractive
 echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
 
 # INSTALAR NODE.JS v20 (MODERNO)
-# Eliminamos versiones viejas si existen
-sudo apt-get remove -y nodejs libnode-dev
-# Añadimos el repo oficial de Node v20 LTS
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+# Eliminamos versiones viejas y repositorios conflictivos
+sudo apt-get remove -y nodejs libnode-dev npm
+sudo rm -f /etc/apt/sources.list.d/nodesource.list
 
+# Instalación limpia de Node v20 LTS
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt update
 sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
     build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache nodejs
 
-# Verificamos que tenemos una versión nueva (Debe ser v18 o superior)
-echo "✅ Versión de Node.js instalada:"
+# Verificamos la versión del SISTEMA (Debe ser v20.x.x)
+echo "✅ Versión de Node.js del SISTEMA:"
 node -v
 
 # --- 3. DEPOT TOOLS ---
@@ -86,23 +87,22 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 rm -rf third_party/angle/third_party/VK-GL-CTS/
 ./build/install-build-deps.sh --android --no-prompt
 
-# --- FIX CRÍTICO: REEMPLAZAR NODE.JS DE GOOGLE POR NODE v20 DEL SISTEMA ---
-echo ">>> FIX: Reemplazando Node.js x64 por versión del sistema (ARM64)..."
-NODE_TARGET="third_party/node/linux/node-linux-x64/bin/node"
+# --- FIX CRÍTICO: REEMPLAZAR NODE.JS (Ejecutado DESPUÉS de runhooks) ---
+echo ">>> FIX FINAL: Reemplazando Node.js interno por el del sistema..."
+NODE_INTERNAL_PATH="third_party/node/linux/node-linux-x64/bin/node"
 
-# Borramos el binario incompatible de Google
-if [ -f "$NODE_TARGET" ]; then
-    rm "$NODE_TARGET"
-fi
+# 1. Aseguramos que el directorio existe (gclient lo crea)
+mkdir -p "$(dirname "$NODE_INTERNAL_PATH")"
 
-# Borramos cualquier enlace viejo para asegurar que apunta al nuevo Node v20
-if [ -L "$NODE_TARGET" ]; then
-    rm "$NODE_TARGET"
-fi
+# 2. Borramos el binario que descargó Google (sea lo que sea)
+rm -f "$NODE_INTERNAL_PATH"
 
-# Creamos el enlace simbólico al nuevo Node v20
-ln -s /usr/bin/node "$NODE_TARGET"
-echo "✅ Node.js parcheado (apuntando a $(node -v))"
+# 3. Creamos el enlace simbólico a nuestro Node v20
+ln -sf /usr/bin/node "$NODE_INTERNAL_PATH"
+
+# 4. Verificación de seguridad
+echo "🔍 Verificando versión de Node que usará Chromium:"
+"$NODE_INTERNAL_PATH" -v || echo "❌ Error: El enlace simbólico falló"
 # -----------------------------------------------------------------
 
 echo ">>> Transformando a Helium..."
@@ -196,6 +196,9 @@ EOF
 
 # --- 7. COMPILAR Y FIRMAR ---
 echo ">>> Compilando con Ninja (Classic)..."
+# Forzamos el PATH del sistema primero para asegurar que node es el nuestro
+export PATH=/usr/bin:$PATH
+
 gn gen out/Default
 ninja -C out/Default chrome_public_apk
 
