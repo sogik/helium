@@ -131,49 +131,55 @@ if [ -d "$SCRIPT_DIR/helium/patches" ]; then
 fi
 
 # =================================================================
-# ☢️ ZONA CRÍTICA: FIX MAESTRO RUST (CORREGIDO) ☢️
+# ☢️ ZONA CRÍTICA: FIX MAESTRO RUST (PYTHON CORREGIDO) ☢️
 # =================================================================
-echo ">>> 💉 Ejecutando FIX MAESTRO en Rust (Versión Quirúrgica)..."
+echo ">>> 💉 Ejecutando FIX MAESTRO en Rust..."
 
-# Hash exacto que Google espera (incluido el -1)
+# Hash exacto
 TARGET_HASH="15283f6fe95e5b604273d13a428bab5fc0788f5a-1"
+# Parte sin el -1 para simular el script de google
+BASE_HASH="15283f6fe95e5b604273d13a428bab5fc0788f5a"
 
-# 1. Crear el archivo VERSION físico (para que la parte de la lista funcione)
+# 1. Crear VERSION físico
 mkdir -p third_party/rust-toolchain
 echo "$TARGET_HASH" > third_party/rust-toolchain/VERSION
-echo "✅ Archivo VERSION creado: $TARGET_HASH"
+echo "✅ Archivo VERSION creado."
 
-# 2. Hackear rust.gni SOLO para la variable rustc_revision
-# IMPORTANTE: No usamos un replace global. Usamos regex específico.
+# 2. Hackear rust.gni
+# FIX: Pasamos la variable de bash dentro del string de python correctamente
 python3 -c "
 import re
 fname = 'build/config/rust.gni'
+target_hash = '$TARGET_HASH' # AQUI estaba el error antes
+
 with open(fname, 'r') as f: content = f.read()
 
-# Buscamos ESPECÍFICAMENTE: rustc_revision = read_file(...)
-# Y lo cambiamos por: rustc_revision = \"HASH\"
-# Dejamos intactos otros read_file (como el que lee la lista de triples)
+# Reemplazo específico para la variable rustc_revision
 pattern = r'(rustc_revision\s*=\s*)read_file\s*\(\s*\".*?VERSION\".*?\)'
-new_content = re.sub(pattern, f'rustc_revision = \"{TARGET_HASH}\"', content, count=1)
+new_content = re.sub(pattern, f'rustc_revision = \"{target_hash}\"', content, count=1)
 
 if content != new_content:
     with open(fname, 'w') as f: f.write(new_content)
-    print('✅ rust.gni hackeado: rustc_revision forzada (lista intacta).')
+    print('✅ rust.gni hackeado correctamente.')
 else:
-    print('⚠️ No se encontró la definición de rustc_revision. ¿Ya estaba parcheado?')
+    print('⚠️ No se modificó rust.gni (¿patrón no encontrado?)')
 "
 
-# 3. Hackear update_rust.py para que devuelva el mismo hash
+# 3. Hackear update_rust.py (Formato compatible con Chromium)
+# Chromium intenta leer este archivo como texto buscando 'RUST_REVISION = ...'
+# Por eso fallaba con 'Array subscript out of range'.
 UPDATE_SCRIPT="tools/rust/update_rust.py"
-echo "✅ Sobrescribiendo $UPDATE_SCRIPT..."
+echo "✅ Sobrescribiendo $UPDATE_SCRIPT con formato compatible..."
+
 cat > "$UPDATE_SCRIPT" <<EOF
-import sys
-# Imprimimos el hash sin salto de línea
-print("$TARGET_HASH", end="")
-sys.exit(0)
+# Este archivo falso satisface tanto la ejecución como la lectura de texto
+RUST_REVISION = '$BASE_HASH'
+RUST_SUB_REVISION = 1
+
+if __name__ == '__main__':
+    print(f"{RUST_REVISION}-{RUST_SUB_REVISION}", end="")
 EOF
 
-echo "✅ Script update_rust.py lobotomizado."
 # =================================================================
 
 # Hacks UI
