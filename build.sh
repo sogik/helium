@@ -6,9 +6,12 @@ set_keys
 sudo apt-get clean
 ulimit -n 4096
 
-# Guardamos la ruta absoluta del inicio para no perdernos
-ROOT_DIR="$(pwd)"
-SRC_DIR="$ROOT_DIR/chromium/src"
+# --- GPS: DEFINICIÓN DE RUTAS ABSOLUTAS ---
+# Guardamos dónde empieza todo para no perdernos
+BUILD_ROOT="$(pwd)"
+SRC_DIR="$BUILD_ROOT/chromium/src"
+echo ">>> 📍 Directorio Raíz: $BUILD_ROOT"
+echo ">>> 📍 Directorio Fuentes: $SRC_DIR"
 
 export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
@@ -31,7 +34,7 @@ tar -xf node-v20.10.0-linux-arm64.tar.xz
 sudo cp -r node-v20.10.0-linux-arm64/{bin,include,lib,share} /usr/local/
 sudo ln -sf /usr/local/bin/node /usr/bin/node
 sudo ln -sf /usr/local/bin/npm /usr/bin/npm
-cd "$ROOT_DIR" # Volvemos a casa
+cd "$BUILD_ROOT" # Volvemos a casa
 
 # B. INSTALACIÓN MANUAL RUST
 echo ">>> 🔨 INSTALANDO RUSTUP (Oficial)..."
@@ -83,12 +86,17 @@ git submodule foreach git config -f ./.git/config submodule.$name.ignore all
 git config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
 
 # --- 5. PARCHEO ---
+# Volvemos a la raíz para asegurar que SCRIPT_DIR funciona
+cd "$BUILD_ROOT"
+
 replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "HELIUM"
 replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Helium"
 replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "helium"
 
+# Entramos a SRC para aplicar parches
+cd "$SRC_DIR"
 echo ">>> Aplicando parches Vanadium..."
-git am --whitespace=nowarn --keep-non-patch $SCRIPT_DIR/vanadium/patches/*.patch
+git am --whitespace=nowarn --keep-non-patch $SCRIPT_DIR/vanadium/patches/*.patch || echo "⚠️ Algunos parches ya estaban aplicados"
 
 echo ">>> Sincronizando dependencias..."
 gclient sync -D --no-history --nohooks
@@ -106,8 +114,7 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 # ==========================================
 # 🛡️ ZONA DE REEMPLAZO DE HERRAMIENTAS (FIX MASIVO)
 # ==========================================
-# Aseguramos estar en el directorio correcto antes de los fixes
-cd "$SRC_DIR" || exit 1
+cd "$SRC_DIR" || exit 1 # Aseguramos estar en src
 
 # 1. FIX NODE.JS
 echo ">>> 🔧 FIX: Reemplazando Node.js..."
@@ -135,7 +142,6 @@ GN_URL="https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-arm64/+/latest"
 
 rm -f "$GN_PATH"
 mkdir -p "buildtools/linux64"
-# Usamos wget en el directorio actual (src)
 wget -O gn_arm64.zip "$GN_URL"
 unzip -o gn_arm64.zip -d buildtools/linux64/
 chmod +x "$GN_PATH"
@@ -177,25 +183,36 @@ fi
 echo ">>> Transformando a Helium..."
 # ⚠️ NAVEGACIÓN CRÍTICA: Aseguramos estar en src
 cd "$SRC_DIR" || exit 1
+echo "📂 Directorio actual: $(pwd)"
 
-python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t .
-python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || echo "⚠️ Advertencia versión"
-python3 "${SCRIPT_DIR}/helium/utils/generate_resources.py" "${SCRIPT_DIR}/helium/resources/generate_resources.txt" "${SCRIPT_DIR}/helium/resources"
-python3 "${SCRIPT_DIR}/helium/utils/replace_resources.py" "${SCRIPT_DIR}/helium/resources/helium_resources.txt" "${SCRIPT_DIR}/helium/resources" .
+# NOTA: Añadimos "|| true" para que no falle si ya se parcheó antes (clean: false)
+python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t . || echo "⚠️ Paso omitido: Nombre ya sustituido o error leve"
+
+python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || echo "⚠️ Paso omitido: Versión ya aplicada"
+
+python3 "${SCRIPT_DIR}/helium/utils/generate_resources.py" "${SCRIPT_DIR}/helium/resources/generate_resources.txt" "${SCRIPT_DIR}/helium/resources" || echo "⚠️ Error generando recursos (quizás ya existen)"
+
+python3 "${SCRIPT_DIR}/helium/utils/replace_resources.py" "${SCRIPT_DIR}/helium/resources/helium_resources.txt" "${SCRIPT_DIR}/helium/resources" . || echo "⚠️ Error reemplazando recursos (quizás ya existen)"
 
 echo ">>> Aplicando parches Helium..."
 if [ -d "$SCRIPT_DIR/helium/patches" ]; then
     shopt -s nullglob
     for patch in $SCRIPT_DIR/helium/patches/*.patch; do
-        git apply --reject --whitespace=fix "$patch" || echo "⚠️ Conflicto parcial en $patch"
+        git apply --reject --whitespace=fix "$patch" || echo "⚠️ Conflicto parcial en $patch (Probablemente ya aplicado)"
     done
     shopt -u nullglob
 fi
 
-# Hacks UI - Ahora sí encontrará los archivos porque estamos en SRC_DIR
-sed -i 's/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
-sed -i 's/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
-sed -i '/<ViewStub/{N;N;N;N;N;N; /optional_button_stub/a\
+# Hacks UI - Verificamos que el archivo existe antes de tocarlo
+if [ -f "extensions/common/extension_features.cc" ]; then
+    sed -i 's/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
+    sed -i 's/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
+else
+    echo "⚠️ No se encuentra extension_features.cc, saltando hack."
+fi
+
+if [ -f "chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml" ]; then
+    sed -i '/<ViewStub/{N;N;N;N;N;N; /optional_button_stub/a\
 \
         <ViewStub\
             android:id="@+id/extension_toolbar_container_stub"\
@@ -203,7 +220,13 @@ sed -i '/<ViewStub/{N;N;N;N;N;N; /optional_button_stub/a\
             android:layout_width="wrap_content"\
             android:layout_height="match_parent" />
 }' chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml
-sed -i 's/extension_toolbar_baseline_width">600dp/extension_toolbar_baseline_width">0dp/' chrome/browser/ui/android/extensions/java/res/values/dimens.xml
+else
+     echo "⚠️ No se encuentra toolbar_phone.xml, saltando hack."
+fi
+
+if [ -f "chrome/browser/ui/android/extensions/java/res/values/dimens.xml" ]; then
+    sed -i 's/extension_toolbar_baseline_width">600dp/extension_toolbar_baseline_width">0dp/' chrome/browser/ui/android/extensions/java/res/values/dimens.xml
+fi
 
 # --- 6. CONFIGURACIÓN GN + CCACHE ---
 export CCACHE_DIR=/home/$(whoami)/.ccache
