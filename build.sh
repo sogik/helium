@@ -12,12 +12,22 @@ export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
 
-# --- 2. PREPARACIÓN UBUNTU ARM + CCACHE ---
+# --- 2. PREPARACIÓN UBUNTU ARM + CCACHE + NODEJS v20 ---
 echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
+
+# INSTALAR NODE.JS v20 (MODERNO)
+# Eliminamos versiones viejas si existen
+sudo apt-get remove -y nodejs libnode-dev
+# Añadimos el repo oficial de Node v20 LTS
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+
 sudo apt update
-# AÑADIDO: 'nodejs' para poder usar el binario del sistema
 sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
     build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache nodejs
+
+# Verificamos que tenemos una versión nueva (Debe ser v18 o superior)
+echo "✅ Versión de Node.js instalada:"
+node -v
 
 # --- 3. DEPOT TOOLS ---
 if [ ! -d "depot_tools" ]; then
@@ -76,17 +86,23 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 rm -rf third_party/angle/third_party/VK-GL-CTS/
 ./build/install-build-deps.sh --android --no-prompt
 
-# --- FIX CRÍTICO: REEMPLAZAR NODE.JS INTEL POR ARM DEL SISTEMA ---
+# --- FIX CRÍTICO: REEMPLAZAR NODE.JS DE GOOGLE POR NODE v20 DEL SISTEMA ---
 echo ">>> FIX: Reemplazando Node.js x64 por versión del sistema (ARM64)..."
 NODE_TARGET="third_party/node/linux/node-linux-x64/bin/node"
+
+# Borramos el binario incompatible de Google
 if [ -f "$NODE_TARGET" ]; then
     rm "$NODE_TARGET"
-    # Creamos un enlace simbólico al node de Ubuntu
-    ln -s /usr/bin/node "$NODE_TARGET"
-    echo "✅ Node.js parcheado correctamente."
-else
-    echo "⚠️ No se encontró la ruta de Node.js esperada. Verificando..."
 fi
+
+# Borramos cualquier enlace viejo para asegurar que apunta al nuevo Node v20
+if [ -L "$NODE_TARGET" ]; then
+    rm "$NODE_TARGET"
+fi
+
+# Creamos el enlace simbólico al nuevo Node v20
+ln -s /usr/bin/node "$NODE_TARGET"
+echo "✅ Node.js parcheado (apuntando a $(node -v))"
 # -----------------------------------------------------------------
 
 echo ">>> Transformando a Helium..."
