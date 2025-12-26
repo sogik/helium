@@ -35,7 +35,7 @@ source "$HOME/.cargo/env"
 rustup toolchain install stable-aarch64-unknown-linux-gnu
 rustup default stable-aarch64-unknown-linux-gnu
 
-# C. INSTALACIÓN GN OFICIAL (ARM64) - Esto lo hacemos en /tmp para no perdernos
+# C. INSTALACIÓN GN OFICIAL (ARM64)
 echo ">>> 🔨 INSTALANDO GN ARM64..."
 wget -O gn_arm64.zip "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-arm64/+/latest"
 unzip -o gn_arm64.zip
@@ -51,8 +51,8 @@ echo "GN: $(gn --version)"
 echo "Clang: $(clang --version | head -n 1)"
 
 # --- 3. RECUPERACIÓN DE RUTA (CRÍTICO) ---
-# Volvemos al directorio de trabajo original del Runner
-cd "/home/ubuntu/actions-runner/actions-runner/_work/helium/helium" || echo "⚠️ No pude volver al dir original, buscando..."
+# Intentamos volver a la ruta más probable del runner
+cd "/home/ubuntu/actions-runner/actions-runner/_work/helium/helium" || echo "⚠️ Ruta estándar no encontrada, se buscará dinámicamente..."
 
 # --- 4. DEPOT TOOLS ---
 if [ ! -d "depot_tools" ]; then
@@ -91,13 +91,13 @@ git submodule foreach git config -f ./.git/config submodule.$name.ignore all
 git config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
 
 # --- 6. PARCHEO ---
-# Volvemos atrás para referenciar patches
+# Subimos dos niveles para estar en la raíz del repo Helium (donde están los parches)
 cd ../.. 
 replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "HELIUM"
 replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Helium"
 replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "helium"
 
-# Entramos a SRC
+# Bajamos a SRC
 cd chromium/src
 echo ">>> Aplicando parches Vanadium..."
 git am --whitespace=nowarn --keep-non-patch $SCRIPT_DIR/vanadium/patches/*.patch || echo "⚠️ Parches ya aplicados"
@@ -148,25 +148,27 @@ if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
 fi
 # ==========================================
 
-# ⚠️ NAVEGACIÓN INTELIGENTE: BUSCAR EL CÓDIGO ⚠️
-echo ">>> 🕵️ Buscando el archivo .gn para ubicar la raíz REAL..."
-# Buscamos el archivo .gn en el directorio actual o subdirectorios
-ACTUAL_SRC=$(find . -maxdepth 4 -name ".gn" -type f -print -quit | xargs dirname)
+# ⚠️ NAVEGACIÓN LÁSER: BUSCAR chrome/VERSION ⚠️
+echo ">>> 🕵️ Buscando la raíz de Chromium (src)..."
+# Buscamos el archivo chrome/VERSION que SOLO existe en la raíz
+# Usamos /home/ubuntu para asegurar que buscamos en todo el disco del runner si hace falta
+# Filtramos por 'chromium/src' para evitar falsos positivos
+SRC_PATH=$(find /home/ubuntu/actions-runner -type f -path "*/chromium/src/chrome/VERSION" -print -quit)
 
-if [ -z "$ACTUAL_SRC" ]; then
-    # Intento de emergencia: buscar desde el home del runner
-    ACTUAL_SRC=$(find /home/ubuntu/actions-runner -maxdepth 6 -name ".gn" -type f -print -quit | xargs dirname)
-fi
-
-if [ -z "$ACTUAL_SRC" ]; then
-    echo "❌ CRÍTICO: No encuentro el código fuente de Chromium. Abortando."
-    pwd
-    ls -F
+if [ -z "$SRC_PATH" ]; then
+    echo "❌ CRÍTICO: No encuentro chromium/src/chrome/VERSION. Abortando."
     exit 1
 fi
 
-cd "$ACTUAL_SRC"
-echo ">>> 📍 Localizado y entrando en: $(pwd)"
+# Quitamos "/chrome/VERSION" de la ruta para obtener la raíz
+REAL_SRC_DIR="${SRC_PATH%/chrome/VERSION}"
+cd "$REAL_SRC_DIR"
+
+echo ">>> 📍 Raíz confirmada en: $(pwd)"
+if [ ! -f ".gn" ]; then
+    echo "❌ ERROR: No hay archivo .gn en la raíz. Algo está mal."
+    exit 1
+fi
 
 echo ">>> Transformando a Helium..."
 # Usamos || true para ignorar errores si ya se ejecutó
@@ -184,7 +186,7 @@ if [ -d "$SCRIPT_DIR/helium/patches" ]; then
     shopt -u nullglob
 fi
 
-# Hacks UI - Rutas relativas ahora funcionarán porque estamos en SRC
+# Hacks UI
 if [ -f "extensions/common/extension_features.cc" ]; then
     sed -i 's/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
     sed -i 's/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
@@ -271,12 +273,11 @@ EOF
 
 # --- 8. COMPILAR Y FIRMAR ---
 echo ">>> Compilando con Ninja (Classic)..."
-# PATH Forzado
 export PATH=$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH
 
-# Verificación final antes de disparar
+# Verificación final
 if [ ! -f "out/Default/args.gn" ]; then
-    echo "❌ ERROR CRÍTICO: args.gn no existe en $(pwd)/out/Default"
+    echo "❌ ERROR CRÍTICO: args.gn no existe. Falló la navegación."
     exit 1
 fi
 
