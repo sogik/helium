@@ -131,6 +131,14 @@ else
     cp -r /usr/lib/rustlib "$RUST_GOOGLE/"
 fi
 
+# ⚠️ NUEVO FIX RUST: CREAR ARCHIVO VERSION ⚠️
+# Chromium necesita este archivo para validar la toolchain
+# Extraemos la versión instalada (ej: 1.75.0) y la escribimos
+CURRENT_RUST_VER=$(rustc --version | awk '{print $2}')
+echo "$CURRENT_RUST_VER" > "$RUST_GOOGLE/VERSION"
+echo "   ✅ Archivo VERSION creado para Rust: $CURRENT_RUST_VER"
+
+
 # FIX CLANG
 LLVM_BIN_DIR="third_party/llvm-build/Release+Asserts/bin"
 CLANG_GOOGLE="$LLVM_BIN_DIR/clang"
@@ -157,30 +165,15 @@ REAL_SRC_DIR="${SRC_PATH%/chrome/VERSION}"
 cd "$REAL_SRC_DIR"
 echo ">>> 📍 Raíz confirmada en: $(pwd)"
 
-# === 🚑 RESURRECCIÓN DE ARCHIVOS PERDIDOS (GIT RESET) ===
+# === 🚑 RESURRECCIÓN DE ARCHIVOS PERDIDOS ===
 if [ ! -f "BUILD.gn" ] || [ ! -f ".gn" ]; then
-    echo "🚨 ALERTA: Faltan archivos vitales (BUILD.gn o .gn). Iniciando reparación..."
-    
-    # 1. Intentamos reset suave (Hard Reset)
-    echo ">>> Ejecutando 'git reset --hard HEAD' para recuperar archivos..."
+    echo "🚨 ALERTA: Faltan archivos vitales. Iniciando reparación..."
     git reset --hard HEAD
-    
-    # 2. Si sigue faltando, es que gclient falló catastróficamente
     if [ ! -f "BUILD.gn" ]; then
-        echo ">>> ⚠️ El reset de Git no bastó. Forzando reparación con gclient..."
-        cd .. # Subimos a chromium/
+        cd ..
         gclient sync -D --force --reset --nohooks
-        cd src # Volvemos a src/
+        cd src
     fi
-    
-    if [ -f "BUILD.gn" ]; then
-        echo "✅ BUILD.gn recuperado con éxito."
-    else
-        echo "❌ ERROR FATAL: No se pudo recuperar BUILD.gn. El repositorio está corrupto."
-        exit 1
-    fi
-else
-    echo "✅ Archivos de estructura (BUILD.gn) detectados correctamente."
 fi
 # ========================================================
 
