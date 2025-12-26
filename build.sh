@@ -8,6 +8,7 @@ export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
 
+echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
 sudo apt update
 sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
     build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache
@@ -57,17 +58,17 @@ echo ">>> Sincronizando dependencias..."
 gclient sync -D --no-history --nohooks
 gclient runhooks
 
-echo ">>> Instalando Sysroots..."
+echo ">>> Instalando Sysroots para evitar errores de arquitectura..."
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
+python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
-# ----------------------------------------------------------
 
 rm -rf third_party/angle/third_party/VK-GL-CTS/
 ./build/install-build-deps.sh --android --no-prompt
 
 echo ">>> Transformando a Helium..."
 python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t .
-python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || echo "Advertencia versión"
+python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || echo "⚠️ Advertencia versión"
 python3 "${SCRIPT_DIR}/helium/utils/generate_resources.py" "${SCRIPT_DIR}/helium/resources/generate_resources.txt" "${SCRIPT_DIR}/helium/resources"
 python3 "${SCRIPT_DIR}/helium/utils/replace_resources.py" "${SCRIPT_DIR}/helium/resources/helium_resources.txt" "${SCRIPT_DIR}/helium/resources" .
 
@@ -75,7 +76,7 @@ echo ">>> Aplicando parches Helium..."
 if [ -d "$SCRIPT_DIR/helium/patches" ]; then
     shopt -s nullglob
     for patch in $SCRIPT_DIR/helium/patches/*.patch; do
-        git apply --reject --whitespace=fix "$patch" || echo "⚠️ Conflicto parcial en $patch"
+        git apply --reject --whitespace=fix "$patch" || echo "Conflicto parcial en $patch"
     done
     shopt -u nullglob
 fi
@@ -146,7 +147,7 @@ mkdir -p out/Default/apks/release
 
 APK_GENERADO=$(find out/Default/apks -name 'Chrome*.apk' | head -n 1)
 if [ -z "$APK_GENERADO" ]; then
-    echo "❌ ERROR: Ninja no generó ningún APK. Revisa los logs de compilación."
+    echo "ERROR: Ninja no generó ningún APK. Revisa los logs de compilación."
     exit 1
 fi
 
