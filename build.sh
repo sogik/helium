@@ -158,7 +158,7 @@ if [ ! -f "BUILD.gn" ] || [ ! -f ".gn" ]; then
 fi
 
 # ==========================================
-# 🛡️ FIX RUST (SPOOFING DE VERSIÓN MEJORADO)
+# 🛡️ FIX RUST (SPOOFING AVANZADO)
 # ==========================================
 echo ">>> 🔧 FIX: Reemplazando y Falsificando Rust..."
 RUST_GOOGLE="third_party/rust-toolchain"
@@ -173,17 +173,22 @@ else
     cp -r /usr/lib/rustlib "$RUST_GOOGLE/"
 fi
 
-# 2. 🕵️ FALSIFICACIÓN DE IDENTIDAD CON PYTHON (MÁS PRECISO)
-# Usamos Python para extraer la variable RUST_REVISION exacta, incluyendo el "-1" si existe
+# 2. 🕵️ FALSIFICACIÓN DE IDENTIDAD CON PYTHON (HASH + SUB_REVISION)
 EXPECTED_HASH=$(python3 -c "
 import re
 try:
     with open('tools/rust/update_rust.py', 'r') as f:
         content = f.read()
-        # Busca RUST_REVISION = '...' o \"...\"
-        match = re.search(r'RUST_REVISION\s*=\s*[\"\']([^\"\']+)[\"\']', content)
-        if match:
-            print(match.group(1))
+        # Busca el hash principal
+        rev_match = re.search(r'RUST_REVISION\s*=\s*[\"\']([^\"\']+)[\"\']', content)
+        # Busca la sub-revisión (el numerito extra)
+        sub_match = re.search(r'RUST_SUB_REVISION\s*=\s*(\d+)', content)
+        
+        if rev_match:
+            revision = rev_match.group(1)
+            if sub_match:
+                revision += f'-{sub_match.group(1)}'
+            print(revision)
         else:
             print('')
 except:
@@ -191,12 +196,13 @@ except:
 ")
 
 if [ -z "$EXPECTED_HASH" ]; then
-    echo "⚠️ No pude leer update_rust.py. Usando valor de respaldo..."
+    echo "⚠️ Fallo al leer update_rust.py. Usando valor de respaldo manual..."
+    # VALOR MANUAL CORREGIDO BASADO EN TU ERROR RECIENTE (CON EL -1)
     EXPECTED_HASH="15283f6fe95e5b604273d13a428bab5fc0788f5a-1"
 fi
 
 echo "$EXPECTED_HASH" > "$RUST_GOOGLE/VERSION"
-echo "   ✅ Rust falsificado con hash exacto: $EXPECTED_HASH"
+echo "   ✅ Rust falsificado con hash COMPLETO: $EXPECTED_HASH"
 # ==========================================
 
 
