@@ -13,11 +13,12 @@ export DEBIAN_FRONTEND=noninteractive
 # --- 2. PREPARACIÓN UBUNTU ARM + INSTALACIONES MANUALES ---
 echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
 
-# INSTALAMOS HERRAMIENTAS NATIVAS (Incluyendo CLANG ahora)
+# INSTALAMOS HERRAMIENTAS NATIVAS (Ninja, Clang, etc.)
+# NOTA: Quitamos 'gn' de aquí porque usaremos uno oficial descargado manualmente
 sudo apt update || echo "⚠️ Apt update con errores leves"
 sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
     build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache \
-    gn ninja-build nasm clang lld
+    ninja-build nasm clang lld unzip
 
 # A. INSTALACIÓN MANUAL NODE.JS v20 (Bypass APT)
 echo ">>> 🔨 INSTALANDO NODE v20 (Manual)..."
@@ -97,7 +98,7 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 
 # Instalación de dependencias (Sin el sed que rompe python)
-./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia en dependencias Google (Ignorable si tenemos clang sistema)"
+./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia en dependencias Google"
 
 # ==========================================
 # 🛡️ ZONA DE REEMPLAZO DE HERRAMIENTAS (FIX MASIVO)
@@ -122,18 +123,24 @@ else
     cp -r /usr/lib/rustlib "$RUST_GOOGLE/"
 fi
 
-# 3. FIX GN
-echo ">>> 🔧 FIX: Verificando GN..."
-GN_GOOGLE="buildtools/linux64/gn"
-if [ -f "$GN_GOOGLE" ]; then
-    if file "$GN_GOOGLE" | grep -q "x86-64"; then
-        echo "   ⚠️ GN incompatible (x86). Reemplazando..."
-        rm -f "$GN_GOOGLE"
-        ln -sf /usr/bin/gn "$GN_GOOGLE"
-    else
-        echo "   ✅ GN compatible."
-    fi
-fi
+# 3. FIX GN (DESCARGA OFICIAL ARM64) - NUEVO
+echo ">>> 🔧 FIX: Instalando GN oficial (ARM64)..."
+GN_PATH="buildtools/linux64/gn"
+# URL oficial de GN para Linux ARM64 (Chrome Infra)
+GN_URL="https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-arm64/+/latest"
+
+# Borramos cualquier GN anterior (sea de google x86 o symlink viejo)
+rm -f "$GN_PATH"
+mkdir -p "buildtools/linux64"
+
+# Descargamos el zip y lo descomprimimos
+wget -O gn_arm64.zip "$GN_URL"
+unzip -o gn_arm64.zip -d buildtools/linux64/
+chmod +x "$GN_PATH"
+rm gn_arm64.zip
+
+echo "   ✅ GN ARM64 oficial instalado."
+"$GN_PATH" --version
 
 # 4. FIX NINJA
 echo ">>> 🔧 FIX: Verificando Ninja..."
@@ -148,25 +155,19 @@ if [ -f "$NINJA_GOOGLE" ]; then
     fi
 fi
 
-# 5. FIX CLANG (CRÍTICO - NUEVO)
+# 5. FIX CLANG
 echo ">>> 🔧 FIX: Verificando Clang..."
 LLVM_BIN_DIR="third_party/llvm-build/Release+Asserts/bin"
 CLANG_GOOGLE="$LLVM_BIN_DIR/clang"
 
-# Si el clang de Google es x86-64, lo matamos
 if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
-    echo "   ⚠️ ALERTA: Clang de Google es x86-64 (INCOMPATIBLE). Iniciando trasplante..."
-    
-    # Borramos los binarios conflictivos
+    echo "   ⚠️ ALERTA: Clang de Google es x86-64. Iniciando trasplante..."
     rm -f "$LLVM_BIN_DIR/clang"
     rm -f "$LLVM_BIN_DIR/clang++"
     rm -f "$LLVM_BIN_DIR/lld"
-    
-    # Enlazamos a los del sistema
     ln -sf /usr/bin/clang "$LLVM_BIN_DIR/clang"
     ln -sf /usr/bin/clang++ "$LLVM_BIN_DIR/clang++"
     ln -sf /usr/bin/lld "$LLVM_BIN_DIR/lld"
-    
     echo "   ✅ Trasplante de Clang completado."
 else
     echo "   ✅ Clang parece correcto o ya fue parcheado."
@@ -224,10 +225,10 @@ v8_snapshot_toolchain = "//build/toolchain/linux:clang_arm64"
 enable_android_secondary_abi = false
 include_both_v8_snapshots = false
 
-# Fix para Clang del sistema (evita que busque librerías en rutas raras)
+# Fix para Clang del sistema
 clang_use_chrome_plugins = false
 linux_use_bundled_binutils = false
-use_custom_libcxx = false   # Usar libc++ del sistema si es necesario
+use_custom_libcxx = false
 
 # --- MATAR SISO / ACTIVAR NINJA CLASSIC ---
 use_siso = false
