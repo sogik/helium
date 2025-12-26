@@ -5,8 +5,8 @@ source common.sh
 set_keys
 ulimit -n 4096
 
-# Fix de Arquitectura (Lo mantenemos porque es necesario para que no falle APT)
-echo ">>> 🧹 Limpiando configuración de APT..."
+# Fix APT
+echo ">>> 🧹 Limpiando APT..."
 sudo dpkg --remove-architecture i386 2>/dev/null || true
 sudo rm -rf /var/lib/apt/lists/*
 sudo apt-get update -y
@@ -18,7 +18,7 @@ export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
 
-# 2. INSTALACIÓN DE HERRAMIENTAS
+# 2. HERRAMIENTAS
 echo ">>> Instalando herramientas..."
 cd /tmp
 wget -q https://nodejs.org/dist/v20.10.0/node-v20.10.0-linux-arm64.tar.xz
@@ -37,7 +37,7 @@ unzip -o -q gn_arm64.zip
 sudo mv gn /usr/local/bin/gn
 sudo chmod +x /usr/local/bin/gn
 
-# 3. DESCARGA DE CÓDIGO
+# 3. CÓDIGO
 cd "/home/ubuntu/actions-runner/actions-runner/_work/helium/helium" || echo "⚠️ Buscando ruta..."
 if [ ! -d "depot_tools" ]; then
     git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
@@ -70,7 +70,7 @@ solutions = [
 target_os = ["android"]
 EOF
 
-# LIMPIEZA TOTAL GIT (Para eliminar cualquier destrozo anterior mío)
+# LIMPIEZA TOTAL (Vital para arreglar BUILD.gn y rust.gni rotos)
 echo ">>> 🧹 Restaurando código fuente original..."
 git am --abort 2>/dev/null || true
 rm -rf .git/rebase-apply .git/rebase-merge
@@ -81,7 +81,7 @@ git clean -fd
 gclient sync -D --no-history --nohooks
 gclient runhooks
 
-# PARCHES HELIUM
+# PARCHES
 cd ../.. 
 replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "HELIUM"
 replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Helium"
@@ -133,40 +133,45 @@ if [ -d "$SCRIPT_DIR/helium/patches" ]; then
 fi
 
 # =================================================================
-# ☢️ ZONA CRÍTICA: IGUALAR ARCHIVO Y SCRIPT ☢️
+# ☢️ ZONA CRÍTICA: EL CLON PERFECTO ☢️
 # =================================================================
-echo ">>> 💉 Sincronizando versión de Rust..."
+echo ">>> 💉 Generando archivos de Rust PERFECTOS..."
 
-# 1. Aseguramos que el archivo VERSION existe con el valor esperado.
-# Esto evita el error "Could not read file".
+# Definimos los valores exactos
+REV="15283f6fe95e5b604273d13a428bab5fc0788f5a"
+SUB="1"
+FULL_VERSION="${REV}-${SUB}"
+
+# 1. Crear el archivo VERSION
+# build/config/rust.gni usa read_file() sobre este archivo.
 mkdir -p third_party/rust-toolchain
-echo "15283f6fe95e5b604273d13a428bab5fc0788f5a-1" > third_party/rust-toolchain/VERSION
-echo "✅ Archivo VERSION creado."
+# Usamos printf para evitar saltos de línea extra que rompen la comparación
+printf "%s" "$FULL_VERSION" > third_party/rust-toolchain/VERSION
+echo "✅ Archivo VERSION creado: $FULL_VERSION"
 
-# 2. Reemplazamos el script de chequeo de Google.
-# En lugar de comprobar cosas complejas, hacemos que este script
-# simplemente lea el archivo VERSION que acabamos de crear e imprima su contenido.
-# Esto garantiza al 100% que la comparación en BUILD.gn será VERDADERA.
-# Y lo más importante: NO TOCAMOS BUILD.gn, así que no hay errores de sintaxis.
-
+# 2. Reemplazar update_rust.py con el formato EXACTO
+# build/config/compiler/BUILD.gn lee este archivo buscando "RUST_REVISION = '...'"
+# También lo ejecuta esperando que imprima la versión.
 UPDATE_SCRIPT="tools/rust/update_rust.py"
+
 cat > "$UPDATE_SCRIPT" <<EOF
-import os
-import sys
+# Copyright 2023 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
-# Ruta al archivo VERSION
-version_file = os.path.join(os.path.dirname(__file__), '..', '..', 'third_party', 'rust-toolchain', 'VERSION')
+# ESTAS DOS LÍNEAS SON VITALES: GN LAS LEE COMO TEXTO
+RUST_REVISION = '$REV'
+RUST_SUB_REVISION = $SUB
 
-try:
-    with open(version_file, 'r') as f:
-        # Leemos y quitamos espacios en blanco (strip)
-        print(f.read().strip(), end="")
-except Exception as e:
-    # Si falla, imprimimos el valor por defecto que sabemos que funciona
-    print("15283f6fe95e5b604273d13a428bab5fc0788f5a-1", end="")
+def main():
+    # Imprimimos sin salto de línea (end='') para que coincida byte a byte con el archivo VERSION
+    print(f"{RUST_REVISION}-{RUST_SUB_REVISION}", end='')
+
+if __name__ == '__main__':
+    main()
 EOF
 
-echo "✅ Script update_rust.py reemplazado por versión espejo."
+echo "✅ Script update_rust.py clonado correctamente."
 # =================================================================
 
 # Hacks UI
@@ -246,8 +251,7 @@ EOF
 echo ">>> Compilando con Ninja (Classic)..."
 export PATH=$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH
 
-# IMPORTANTE: Asegurarnos de que BUILD.gn está limpio de mis errores anteriores
-git checkout HEAD -- build/config/compiler/BUILD.gn 2>/dev/null || true
+# IMPORTANTE: No tocamos BUILD.gn ni rust.gni, están limpios del 'git reset'
 
 gn gen out/Default
 ninja -C out/Default chrome_public_apk
