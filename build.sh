@@ -12,23 +12,31 @@ export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
 
-# --- 2. PREPARACIÓN UBUNTU ARM + CCACHE + NODEJS v20 ---
+# --- 2. PREPARACIÓN UBUNTU ARM + CCACHE ---
 echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
 
-# INSTALAR NODE.JS v20 (MODERNO)
-# Eliminamos versiones viejas y repositorios conflictivos
-sudo apt-get remove -y nodejs libnode-dev npm
-sudo rm -f /etc/apt/sources.list.d/nodesource.list
+# --- INSTALACIÓN MANUAL DE NODE.JS v20 (BYPASS APT) ---
+echo ">>> 🔨 FORZANDO INSTALACIÓN MANUAL DE NODE v20..."
+cd /tmp
+# Descargamos el binario oficial directamente (sin intermediarios)
+wget https://nodejs.org/dist/v20.10.0/node-v20.10.0-linux-arm64.tar.xz
+# Descomprimimos
+tar -xf node-v20.10.0-linux-arm64.tar.xz
+# Copiamos los binarios a /usr/local/ (sobrescribiendo lo que haya)
+sudo cp -r node-v20.10.0-linux-arm64/{bin,include,lib,share} /usr/local/
+# Aseguramos que /usr/bin/node apunte a este nuevo binario
+sudo ln -sf /usr/local/bin/node /usr/bin/node
+sudo ln -sf /usr/local/bin/npm /usr/bin/npm
+cd -
 
-# Instalación limpia de Node v20 LTS
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt update
-sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
-    build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache nodejs
-
-# Verificamos la versión del SISTEMA (Debe ser v20.x.x)
-echo "✅ Versión de Node.js del SISTEMA:"
+echo "✅ Versión de Node.js instalada (Debe ser v20.10.0):"
 node -v
+# ------------------------------------------------------
+
+# Intentamos arreglar dependencias rotas sin fallar si apt da error
+sudo apt update || echo "⚠️ Apt update falló, ignorando..."
+sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
+    build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache || echo "⚠️ Alguna dependencia falló"
 
 # --- 3. DEPOT TOOLS ---
 if [ ! -d "depot_tools" ]; then
@@ -84,25 +92,27 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 
-rm -rf third_party/angle/third_party/VK-GL-CTS/
-./build/install-build-deps.sh --android --no-prompt
+# PARCHE PARA SCRIPT DE GOOGLE QUE FALLA
+# Evitamos que install-build-deps.py ejecute 'apt-get update' porque sabemos que falla
+sed -i 's/apt_update(options)/# apt_update(options)/' build/install-build-deps.py
+./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia en dependencias Google"
 
-# --- FIX CRÍTICO: REEMPLAZAR NODE.JS (Ejecutado DESPUÉS de runhooks) ---
-echo ">>> FIX FINAL: Reemplazando Node.js interno por el del sistema..."
+# --- FIX CRÍTICO: REEMPLAZAR NODE.JS INTERNO ---
+echo ">>> FIX FINAL: Reemplazando Node.js interno por el manual v20..."
 NODE_INTERNAL_PATH="third_party/node/linux/node-linux-x64/bin/node"
 
-# 1. Aseguramos que el directorio existe (gclient lo crea)
+# 1. Aseguramos que el directorio existe
 mkdir -p "$(dirname "$NODE_INTERNAL_PATH")"
 
-# 2. Borramos el binario que descargó Google (sea lo que sea)
+# 2. Borramos el binario viejo
 rm -f "$NODE_INTERNAL_PATH"
 
-# 3. Creamos el enlace simbólico a nuestro Node v20
-ln -sf /usr/bin/node "$NODE_INTERNAL_PATH"
+# 3. Enlazamos al Node v20 que instalamos manualmente en /usr/local/bin/node
+ln -sf /usr/local/bin/node "$NODE_INTERNAL_PATH"
 
 # 4. Verificación de seguridad
 echo "🔍 Verificando versión de Node que usará Chromium:"
-"$NODE_INTERNAL_PATH" -v || echo "❌ Error: El enlace simbólico falló"
+"$NODE_INTERNAL_PATH" -v
 # -----------------------------------------------------------------
 
 echo ">>> Transformando a Helium..."
@@ -196,8 +206,8 @@ EOF
 
 # --- 7. COMPILAR Y FIRMAR ---
 echo ">>> Compilando con Ninja (Classic)..."
-# Forzamos el PATH del sistema primero para asegurar que node es el nuestro
-export PATH=/usr/bin:$PATH
+# Forzamos el PATH para que encuentre nuestro node
+export PATH=/usr/local/bin:$PATH
 
 gn gen out/Default
 ninja -C out/Default chrome_public_apk
