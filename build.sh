@@ -131,37 +131,44 @@ if [ -d "$SCRIPT_DIR/helium/patches" ]; then
 fi
 
 # =================================================================
-# ☢️ ZONA CRÍTICA: LA DOBLE MENTIRA (FIX DEFINITIVO) ☢️
+# ☢️ ZONA CRÍTICA: FIX MAESTRO RUST (CORREGIDO) ☢️
 # =================================================================
-echo ">>> 💉 Ejecutando FIX MAESTRO en Rust..."
+echo ">>> 💉 Ejecutando FIX MAESTRO en Rust (Versión Quirúrgica)..."
 
 # Hash exacto que Google espera (incluido el -1)
 TARGET_HASH="15283f6fe95e5b604273d13a428bab5fc0788f5a-1"
 
-# 1. MENTIRA A: Crear el archivo VERSION físico
+# 1. Crear el archivo VERSION físico (para que la parte de la lista funcione)
 mkdir -p third_party/rust-toolchain
 echo "$TARGET_HASH" > third_party/rust-toolchain/VERSION
 echo "✅ Archivo VERSION creado: $TARGET_HASH"
 
-# 2. MENTIRA B: Hackear rust.gni para que use ese hash FIJO
-# Usamos python para inyectar el valor literal, eliminando la lectura de archivo
+# 2. Hackear rust.gni SOLO para la variable rustc_revision
+# IMPORTANTE: No usamos un replace global. Usamos regex específico.
 python3 -c "
 import re
 fname = 'build/config/rust.gni'
 with open(fname, 'r') as f: content = f.read()
-# Reemplazar 'read_file(...)' por el string literal
-new_content = re.sub(r'read_file\s*\(.*?\)', f'\"$TARGET_HASH\"', content, flags=re.DOTALL)
-with open(fname, 'w') as f: f.write(new_content)
-print('✅ rust.gni hackeado: Variable forzada.')
+
+# Buscamos ESPECÍFICAMENTE: rustc_revision = read_file(...)
+# Y lo cambiamos por: rustc_revision = \"HASH\"
+# Dejamos intactos otros read_file (como el que lee la lista de triples)
+pattern = r'(rustc_revision\s*=\s*)read_file\s*\(\s*\".*?VERSION\".*?\)'
+new_content = re.sub(pattern, f'rustc_revision = \"{TARGET_HASH}\"', content, count=1)
+
+if content != new_content:
+    with open(fname, 'w') as f: f.write(new_content)
+    print('✅ rust.gni hackeado: rustc_revision forzada (lista intacta).')
+else:
+    print('⚠️ No se encontró la definición de rustc_revision. ¿Ya estaba parcheado?')
 "
 
-# 3. MENTIRA C: Hackear update_rust.py para que SIEMPRE devuelva el hash
-# Sobrescribimos el script entero. Así GN cuando lo ejecute dirá 'Oh, coincide perfecto'.
+# 3. Hackear update_rust.py para que devuelva el mismo hash
 UPDATE_SCRIPT="tools/rust/update_rust.py"
 echo "✅ Sobrescribiendo $UPDATE_SCRIPT..."
 cat > "$UPDATE_SCRIPT" <<EOF
 import sys
-# Imprimimos el hash sin salto de línea (end='') para que la comparación sea perfecta
+# Imprimimos el hash sin salto de línea
 print("$TARGET_HASH", end="")
 sys.exit(0)
 EOF
