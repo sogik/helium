@@ -6,6 +6,10 @@ set_keys
 sudo apt-get clean
 ulimit -n 4096
 
+# Guardamos la ruta absoluta del inicio para no perdernos
+ROOT_DIR="$(pwd)"
+SRC_DIR="$ROOT_DIR/chromium/src"
+
 export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
@@ -13,14 +17,13 @@ export DEBIAN_FRONTEND=noninteractive
 # --- 2. PREPARACIÓN UBUNTU ARM + INSTALACIONES MANUALES ---
 echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
 
-# INSTALAMOS HERRAMIENTAS NATIVAS (Ninja, Clang, etc.)
-# NOTA: Quitamos 'gn' de aquí porque usaremos uno oficial descargado manualmente
+# INSTALAMOS HERRAMIENTAS NATIVAS
 sudo apt update || echo "⚠️ Apt update con errores leves"
 sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
     build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache \
     ninja-build nasm clang lld unzip
 
-# A. INSTALACIÓN MANUAL NODE.JS v20 (Bypass APT)
+# A. INSTALACIÓN MANUAL NODE.JS v20
 echo ">>> 🔨 INSTALANDO NODE v20 (Manual)..."
 cd /tmp
 wget https://nodejs.org/dist/v20.10.0/node-v20.10.0-linux-arm64.tar.xz
@@ -28,9 +31,9 @@ tar -xf node-v20.10.0-linux-arm64.tar.xz
 sudo cp -r node-v20.10.0-linux-arm64/{bin,include,lib,share} /usr/local/
 sudo ln -sf /usr/local/bin/node /usr/bin/node
 sudo ln -sf /usr/local/bin/npm /usr/bin/npm
-cd -
+cd "$ROOT_DIR" # Volvemos a casa
 
-# B. INSTALACIÓN MANUAL RUST (Oficial)
+# B. INSTALACIÓN MANUAL RUST
 echo ">>> 🔨 INSTALANDO RUSTUP (Oficial)..."
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
@@ -97,12 +100,14 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 
-# Instalación de dependencias (Sin el sed que rompe python)
+# Instalación de dependencias
 ./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia en dependencias Google"
 
 # ==========================================
 # 🛡️ ZONA DE REEMPLAZO DE HERRAMIENTAS (FIX MASIVO)
 # ==========================================
+# Aseguramos estar en el directorio correcto antes de los fixes
+cd "$SRC_DIR" || exit 1
 
 # 1. FIX NODE.JS
 echo ">>> 🔧 FIX: Reemplazando Node.js..."
@@ -123,31 +128,26 @@ else
     cp -r /usr/lib/rustlib "$RUST_GOOGLE/"
 fi
 
-# 3. FIX GN (DESCARGA OFICIAL ARM64) - NUEVO
+# 3. FIX GN (DESCARGA OFICIAL ARM64)
 echo ">>> 🔧 FIX: Instalando GN oficial (ARM64)..."
 GN_PATH="buildtools/linux64/gn"
-# URL oficial de GN para Linux ARM64 (Chrome Infra)
 GN_URL="https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-arm64/+/latest"
 
-# Borramos cualquier GN anterior (sea de google x86 o symlink viejo)
 rm -f "$GN_PATH"
 mkdir -p "buildtools/linux64"
-
-# Descargamos el zip y lo descomprimimos
+# Usamos wget en el directorio actual (src)
 wget -O gn_arm64.zip "$GN_URL"
 unzip -o gn_arm64.zip -d buildtools/linux64/
 chmod +x "$GN_PATH"
 rm gn_arm64.zip
-
 echo "   ✅ GN ARM64 oficial instalado."
-"$GN_PATH" --version
 
 # 4. FIX NINJA
 echo ">>> 🔧 FIX: Verificando Ninja..."
 NINJA_GOOGLE="third_party/ninja/ninja"
 if [ -f "$NINJA_GOOGLE" ]; then
     if file "$NINJA_GOOGLE" | grep -q "x86-64"; then
-        echo "   ⚠️ Ninja incompatible (x86). Reemplazando..."
+        echo "   ⚠️ Ninja incompatible. Reemplazando..."
         rm -f "$NINJA_GOOGLE"
         ln -sf /usr/bin/ninja "$NINJA_GOOGLE"
     else
@@ -161,7 +161,7 @@ LLVM_BIN_DIR="third_party/llvm-build/Release+Asserts/bin"
 CLANG_GOOGLE="$LLVM_BIN_DIR/clang"
 
 if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
-    echo "   ⚠️ ALERTA: Clang de Google es x86-64. Iniciando trasplante..."
+    echo "   ⚠️ ALERTA: Clang incompatible. Trasplantando..."
     rm -f "$LLVM_BIN_DIR/clang"
     rm -f "$LLVM_BIN_DIR/clang++"
     rm -f "$LLVM_BIN_DIR/lld"
@@ -170,11 +170,14 @@ if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
     ln -sf /usr/bin/lld "$LLVM_BIN_DIR/lld"
     echo "   ✅ Trasplante de Clang completado."
 else
-    echo "   ✅ Clang parece correcto o ya fue parcheado."
+    echo "   ✅ Clang parece correcto."
 fi
 # ==========================================
 
 echo ">>> Transformando a Helium..."
+# ⚠️ NAVEGACIÓN CRÍTICA: Aseguramos estar en src
+cd "$SRC_DIR" || exit 1
+
 python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t .
 python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || echo "⚠️ Advertencia versión"
 python3 "${SCRIPT_DIR}/helium/utils/generate_resources.py" "${SCRIPT_DIR}/helium/resources/generate_resources.txt" "${SCRIPT_DIR}/helium/resources"
@@ -189,7 +192,7 @@ if [ -d "$SCRIPT_DIR/helium/patches" ]; then
     shopt -u nullglob
 fi
 
-# Hacks UI
+# Hacks UI - Ahora sí encontrará los archivos porque estamos en SRC_DIR
 sed -i 's/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
 sed -i 's/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
 sed -i '/<ViewStub/{N;N;N;N;N;N; /optional_button_stub/a\
@@ -268,7 +271,8 @@ EOF
 
 # --- 7. COMPILAR Y FIRMAR ---
 echo ">>> Compilando con Ninja (Classic)..."
-# Forzamos PATH
+# Aseguramos estar en el directorio correcto y con el PATH bien
+cd "$SRC_DIR" || exit 1
 export PATH=$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH
 
 gn gen out/Default
