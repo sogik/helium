@@ -1,6 +1,7 @@
 #!/bin/bash
 source common.sh
 
+# 1. Configuración
 set_keys
 sudo apt-get clean
 
@@ -8,17 +9,20 @@ export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
 
+# --- 2. PREPARACIÓN UBUNTU ARM + CCACHE ---
 echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
 sudo apt update
 sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
     build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache
 
+# --- 3. DEPOT TOOLS ---
 if [ ! -d "depot_tools" ]; then
     git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
 fi
 export PATH="$PWD/depot_tools:$PATH"
 export DEPOT_TOOLS_Metrics=0
 
+# --- 4. DESCARGA CHROMIUM ---
 mkdir -p chromium/src/out/Default; cd chromium
 gclient root; cd src
 git init
@@ -47,6 +51,7 @@ EOF
 git submodule foreach git config -f ./.git/config submodule.$name.ignore all
 git config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
 
+# --- 5. PARCHEO ---
 replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "HELIUM"
 replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Helium"
 replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "helium"
@@ -58,7 +63,8 @@ echo ">>> Sincronizando dependencias..."
 gclient sync -D --no-history --nohooks
 gclient runhooks
 
-echo ">>> Instalando Sysroots para evitar errores de arquitectura..."
+# --- SYSROOTS (Para evitar el error de missing sysroot) ---
+echo ">>> Instalando Sysroots..."
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
@@ -76,11 +82,12 @@ echo ">>> Aplicando parches Helium..."
 if [ -d "$SCRIPT_DIR/helium/patches" ]; then
     shopt -s nullglob
     for patch in $SCRIPT_DIR/helium/patches/*.patch; do
-        git apply --reject --whitespace=fix "$patch" || echo "Conflicto parcial en $patch"
+        git apply --reject --whitespace=fix "$patch" || echo "⚠️ Conflicto parcial en $patch"
     done
     shopt -u nullglob
 fi
 
+# Hacks UI
 sed -i 's/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Unsupported, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
 sed -i 's/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_ENABLED_BY_DEFAULT);/BASE_FEATURE(kExtensionManifestV2Disabled, base::FEATURE_DISABLED_BY_DEFAULT);/' extensions/common/extension_features.cc
 sed -i '/<ViewStub/{N;N;N;N;N;N; /optional_button_stub/a\
@@ -93,6 +100,7 @@ sed -i '/<ViewStub/{N;N;N;N;N;N; /optional_button_stub/a\
 }' chrome/browser/ui/android/toolbar/java/res/layout/toolbar_phone.xml
 sed -i 's/extension_toolbar_baseline_width">600dp/extension_toolbar_baseline_width">0dp/' chrome/browser/ui/android/extensions/java/res/values/dimens.xml
 
+# --- 6. CONFIGURACIÓN GN + CCACHE ---
 export CCACHE_DIR=/home/$(whoami)/.ccache
 mkdir -p $CCACHE_DIR
 export CCACHE_MAXSIZE=30G 
@@ -105,6 +113,15 @@ target_os = "android"
 target_cpu = "arm64"
 host_cpu = "arm64" 
 
+# --- CORRECCIÓN CRÍTICA V8 PARA ORACLE ARM ---
+# Esto evita el error: "Do not know how to build a snapshot"
+v8_snapshot_toolchain = "//build/toolchain/linux:clang_arm64"
+
+# Desactivamos la parte de 32 bits para evitar conflictos y ahorrar RAM
+enable_android_secondary_abi = false
+include_both_v8_snapshots = false
+
+# OPTIMIZACIONES
 cc_wrapper = "ccache"
 use_thin_lto = false
 concurrent_links = 2
@@ -133,21 +150,22 @@ use_official_google_api_keys=false
 use_rtti=false
 enable_av1_decoder=true
 enable_dav1d_decoder=true
-include_both_v8_snapshots = false
-include_both_v8_snapshots_android_secondary_abi = false
 generate_linker_map = false
 EOF
 
+# --- 7. COMPILAR Y FIRMAR ---
 echo ">>> Compilando con Ninja..."
 gn gen out/Default
 autoninja -C out/Default chrome_public_apk
 
+# USAR JAVA DEL SISTEMA
 export ANDROID_HOME=$PWD/third_party/android_sdk/public
 mkdir -p out/Default/apks/release
 
+# Buscar y firmar
 APK_GENERADO=$(find out/Default/apks -name 'Chrome*.apk' | head -n 1)
 if [ -z "$APK_GENERADO" ]; then
-    echo "ERROR: Ninja no generó ningún APK. Revisa los logs de compilación."
+    echo "❌ ERROR: Ninja no generó ningún APK. Revisa los logs de compilación."
     exit 1
 fi
 
