@@ -4,39 +4,43 @@ source common.sh
 # 1. Configuración y Optimización de Sistema
 set_keys
 sudo apt-get clean
-
-# AUMENTAR LÍMITES DEL SISTEMA
 ulimit -n 4096
 
 export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
 
-# --- 2. PREPARACIÓN UBUNTU ARM + CCACHE ---
+# --- 2. PREPARACIÓN UBUNTU ARM + INSTALACIONES MANUALES ---
 echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
 
-# --- INSTALACIÓN MANUAL DE NODE.JS v20 (BYPASS APT) ---
-echo ">>> 🔨 FORZANDO INSTALACIÓN MANUAL DE NODE v20..."
+# INSTALAMOS HERRAMIENTAS NATIVAS DE UBUNTU PARA REEMPLAZAR LAS DE GOOGLE
+sudo apt update || echo "⚠️ Apt update con errores leves"
+sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
+    build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache \
+    gn ninja-build nasm
+
+# A. INSTALACIÓN MANUAL NODE.JS v20 (Bypass APT)
+echo ">>> 🔨 INSTALANDO NODE v20 (Manual)..."
 cd /tmp
-# Descargamos el binario oficial directamente (sin intermediarios)
 wget https://nodejs.org/dist/v20.10.0/node-v20.10.0-linux-arm64.tar.xz
-# Descomprimimos
 tar -xf node-v20.10.0-linux-arm64.tar.xz
-# Copiamos los binarios a /usr/local/ (sobrescribiendo lo que haya)
 sudo cp -r node-v20.10.0-linux-arm64/{bin,include,lib,share} /usr/local/
-# Aseguramos que /usr/bin/node apunte a este nuevo binario
 sudo ln -sf /usr/local/bin/node /usr/bin/node
 sudo ln -sf /usr/local/bin/npm /usr/bin/npm
 cd -
 
-echo "✅ Versión de Node.js instalada (Debe ser v20.10.0):"
-node -v
-# ------------------------------------------------------
+# B. INSTALACIÓN MANUAL RUST (Oficial)
+echo ">>> 🔨 INSTALANDO RUSTUP (Oficial)..."
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+rustup toolchain install stable-aarch64-unknown-linux-gnu
+rustup default stable-aarch64-unknown-linux-gnu
 
-# Intentamos arreglar dependencias rotas sin fallar si apt da error
-sudo apt update || echo "⚠️ Apt update falló, ignorando..."
-sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
-    build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache || echo "⚠️ Alguna dependencia falló"
+echo "✅ Versiones Sistema:"
+echo "Node: $(node -v)"
+echo "Rust: $(rustc --version)"
+echo "Ninja: $(ninja --version)"
+echo "GN: $(gn --version)"
 
 # --- 3. DEPOT TOOLS ---
 if [ ! -d "depot_tools" ]; then
@@ -92,28 +96,70 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 
-# PARCHE PARA SCRIPT DE GOOGLE QUE FALLA
-# Evitamos que install-build-deps.py ejecute 'apt-get update' porque sabemos que falla
+# PARCHE PARA SCRIPT DE GOOGLE
 sed -i 's/apt_update(options)/# apt_update(options)/' build/install-build-deps.py
 ./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia en dependencias Google"
 
-# --- FIX CRÍTICO: REEMPLAZAR NODE.JS INTERNO ---
-echo ">>> FIX FINAL: Reemplazando Node.js interno por el manual v20..."
-NODE_INTERNAL_PATH="third_party/node/linux/node-linux-x64/bin/node"
+# ==========================================
+# 🛡️ ZONA DE REEMPLAZO DE HERRAMIENTAS (FIX MASIVO)
+# ==========================================
 
-# 1. Aseguramos que el directorio existe
-mkdir -p "$(dirname "$NODE_INTERNAL_PATH")"
+# 1. FIX NODE.JS
+echo ">>> 🔧 FIX: Reemplazando Node.js..."
+NODE_INTERNAL="third_party/node/linux/node-linux-x64/bin/node"
+mkdir -p "$(dirname "$NODE_INTERNAL")"
+rm -f "$NODE_INTERNAL"
+ln -sf /usr/local/bin/node "$NODE_INTERNAL"
 
-# 2. Borramos el binario viejo
-rm -f "$NODE_INTERNAL_PATH"
+# 2. FIX RUST
+echo ">>> 🔧 FIX: Reemplazando Rust..."
+RUST_GOOGLE="third_party/rust-toolchain"
+rm -rf "$RUST_GOOGLE"
+mkdir -p "$RUST_GOOGLE"
+LOCAL_RUST="$HOME/.rustup/toolchains/stable-aarch64-unknown-linux-gnu"
+if [ -d "$LOCAL_RUST" ]; then
+    cp -r "$LOCAL_RUST/"* "$RUST_GOOGLE/"
+else
+    cp -r /usr/lib/rustlib "$RUST_GOOGLE/"
+fi
 
-# 3. Enlazamos al Node v20 que instalamos manualmente en /usr/local/bin/node
-ln -sf /usr/local/bin/node "$NODE_INTERNAL_PATH"
+# 3. FIX GN (Nuevo)
+echo ">>> 🔧 FIX: Verificando GN..."
+GN_GOOGLE="buildtools/linux64/gn"
+# Si existe y NO es ARM (file devuelve x86-64), lo reemplazamos
+if [ -f "$GN_GOOGLE" ]; then
+    if file "$GN_GOOGLE" | grep -q "x86-64"; then
+        echo "   ⚠️ GN de Google es incompatible (x86). Reemplazando con el del sistema..."
+        rm -f "$GN_GOOGLE"
+        ln -sf /usr/bin/gn "$GN_GOOGLE"
+    else
+        echo "   ✅ GN de Google parece compatible."
+    fi
+fi
 
-# 4. Verificación de seguridad
-echo "🔍 Verificando versión de Node que usará Chromium:"
-"$NODE_INTERNAL_PATH" -v
-# -----------------------------------------------------------------
+# 4. FIX NINJA (Nuevo)
+echo ">>> 🔧 FIX: Verificando Ninja..."
+NINJA_GOOGLE="third_party/ninja/ninja"
+if [ -f "$NINJA_GOOGLE" ]; then
+    if file "$NINJA_GOOGLE" | grep -q "x86-64"; then
+        echo "   ⚠️ Ninja de Google es incompatible (x86). Reemplazando con el del sistema..."
+        rm -f "$NINJA_GOOGLE"
+        ln -sf /usr/bin/ninja "$NINJA_GOOGLE"
+    else
+        echo "   ✅ Ninja de Google parece compatible."
+    fi
+fi
+
+# 5. FIX CLANG (Verificación)
+echo ">>> 🔧 Verificando Clang..."
+CLANG_BIN="third_party/llvm-build/Release+Asserts/bin/clang"
+if [ -f "$CLANG_BIN" ]; then
+    file "$CLANG_BIN"
+    # Nota: Si Clang es incorrecto, el fix es más complejo, pero gclient suele bajar el correcto para ARM.
+else
+    echo "⚠️ No se encontró Clang, se intentará usar."
+fi
+# ==========================================
 
 echo ">>> Transformando a Helium..."
 python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t .
@@ -149,9 +195,7 @@ mkdir -p $CCACHE_DIR
 export CCACHE_MAXSIZE=30G 
 echo ">>> Usando CCache en: $CCACHE_DIR"
 
-# Limpieza automática si hay conflicto
 if [ -f "out/Default/.siso_config" ] || [ -f "out/Default/build.ninja.stamp" ]; then
-    echo "⚠️ DETECTADO RASTRO DE SISO O COMPILACIÓN CORRUPTA."
     rm -rf out/Default
 fi
 mkdir -p out/Default
@@ -206,8 +250,8 @@ EOF
 
 # --- 7. COMPILAR Y FIRMAR ---
 echo ">>> Compilando con Ninja (Classic)..."
-# Forzamos el PATH para que encuentre nuestro node
-export PATH=/usr/local/bin:$PATH
+# Forzamos PATH: Cargo(Rust) + Node Local + Sistema + Depot Tools
+export PATH=$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH
 
 gn gen out/Default
 ninja -C out/Default chrome_public_apk
