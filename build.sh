@@ -8,7 +8,6 @@ export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
 export CHROMIUM_SOURCE=https://github.com/chromium/chromium.git 
 export DEBIAN_FRONTEND=noninteractive
 
-echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
 sudo apt update
 sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
     build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache
@@ -58,6 +57,11 @@ echo ">>> Sincronizando dependencias..."
 gclient sync -D --no-history --nohooks
 gclient runhooks
 
+echo ">>> Instalando Sysroots..."
+python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
+python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
+# ----------------------------------------------------------
+
 rm -rf third_party/angle/third_party/VK-GL-CTS/
 ./build/install-build-deps.sh --android --no-prompt
 
@@ -71,7 +75,7 @@ echo ">>> Aplicando parches Helium..."
 if [ -d "$SCRIPT_DIR/helium/patches" ]; then
     shopt -s nullglob
     for patch in $SCRIPT_DIR/helium/patches/*.patch; do
-        git apply --reject --whitespace=fix "$patch" || echo "Conflicto parcial en $patch"
+        git apply --reject --whitespace=fix "$patch" || echo "⚠️ Conflicto parcial en $patch"
     done
     shopt -u nullglob
 fi
@@ -133,12 +137,19 @@ include_both_v8_snapshots_android_secondary_abi = false
 generate_linker_map = false
 EOF
 
-echo ">>> Compilando..."
+echo ">>> Compilando con Ninja..."
 gn gen out/Default
 autoninja -C out/Default chrome_public_apk
 
 export ANDROID_HOME=$PWD/third_party/android_sdk/public
 mkdir -p out/Default/apks/release
-sign_apk $(find out/Default/apks -name 'Chrome*.apk') out/Default/apks/release/$VERSION.apk
+
+APK_GENERADO=$(find out/Default/apks -name 'Chrome*.apk' | head -n 1)
+if [ -z "$APK_GENERADO" ]; then
+    echo "❌ ERROR: Ninja no generó ningún APK. Revisa los logs de compilación."
+    exit 1
+fi
+
+sign_apk "$APK_GENERADO" out/Default/apks/release/$VERSION.apk
 
 ccache -s
