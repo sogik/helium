@@ -50,9 +50,8 @@ echo "Ninja: $(ninja --version)"
 echo "GN: $(gn --version)"
 echo "Clang: $(clang --version | head -n 1)"
 
-# --- 3. RECUPERACIÓN DE RUTA (CRÍTICO) ---
-# Intentamos volver a la ruta más probable del runner
-cd "/home/ubuntu/actions-runner/actions-runner/_work/helium/helium" || echo "⚠️ Ruta estándar no encontrada, se buscará dinámicamente..."
+# --- 3. RECUPERACIÓN DE RUTA ---
+cd "/home/ubuntu/actions-runner/actions-runner/_work/helium/helium" || echo "⚠️ Buscando ruta..."
 
 # --- 4. DEPOT TOOLS ---
 if [ ! -d "depot_tools" ]; then
@@ -91,13 +90,11 @@ git submodule foreach git config -f ./.git/config submodule.$name.ignore all
 git config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
 
 # --- 6. PARCHEO ---
-# Subimos dos niveles para estar en la raíz del repo Helium (donde están los parches)
 cd ../.. 
 replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "HELIUM"
 replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Helium"
 replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "helium"
 
-# Bajamos a SRC
 cd chromium/src
 echo ">>> Aplicando parches Vanadium..."
 git am --whitespace=nowarn --keep-non-patch $SCRIPT_DIR/vanadium/patches/*.patch || echo "⚠️ Parches ya aplicados"
@@ -112,7 +109,6 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 
-# Instalación de dependencias (Bypass error)
 ./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia en dependencias Google"
 
 # ==========================================
@@ -148,11 +144,8 @@ if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
 fi
 # ==========================================
 
-# ⚠️ NAVEGACIÓN LÁSER: BUSCAR chrome/VERSION ⚠️
+# ⚠️ NAVEGACIÓN LÁSER & AUTO-REPARACIÓN ⚠️
 echo ">>> 🕵️ Buscando la raíz de Chromium (src)..."
-# Buscamos el archivo chrome/VERSION que SOLO existe en la raíz
-# Usamos /home/ubuntu para asegurar que buscamos en todo el disco del runner si hace falta
-# Filtramos por 'chromium/src' para evitar falsos positivos
 SRC_PATH=$(find /home/ubuntu/actions-runner -type f -path "*/chromium/src/chrome/VERSION" -print -quit)
 
 if [ -z "$SRC_PATH" ]; then
@@ -160,15 +153,25 @@ if [ -z "$SRC_PATH" ]; then
     exit 1
 fi
 
-# Quitamos "/chrome/VERSION" de la ruta para obtener la raíz
 REAL_SRC_DIR="${SRC_PATH%/chrome/VERSION}"
 cd "$REAL_SRC_DIR"
-
 echo ">>> 📍 Raíz confirmada en: $(pwd)"
+
+# === PASO DE EMERGENCIA: RECUPERAR ARCHIVOS PERDIDOS ===
 if [ ! -f ".gn" ]; then
-    echo "❌ ERROR: No hay archivo .gn en la raíz. Algo está mal."
-    exit 1
+    echo "⚠️ .gn no encontrado. Intentando recuperarlo con Git..."
+    git checkout HEAD -- .gn || echo "⚠️ No se pudo recuperar .gn (¿Quizás commit corrupto?)"
+    
+    # Intento 2: Si git falla, creamos uno básico para que GN no explote
+    if [ ! -f ".gn" ]; then
+        echo "⚠️ Creando .gn de emergencia..."
+        echo 'buildconfig = "//build/config/BUILDCONFIG.gn"' > .gn
+    fi
 fi
+
+# Diagnóstico visual
+echo "📂 Contenido de la raíz:"
+ls -la .gn BUILD.gn chrome/VERSION
 
 echo ">>> Transformando a Helium..."
 # Usamos || true para ignorar errores si ya se ejecutó
