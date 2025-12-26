@@ -13,11 +13,11 @@ export DEBIAN_FRONTEND=noninteractive
 # --- 2. PREPARACIÓN UBUNTU ARM + INSTALACIONES MANUALES ---
 echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
 
-# INSTALAMOS HERRAMIENTAS NATIVAS DE UBUNTU PARA REEMPLAZAR LAS DE GOOGLE
+# INSTALAMOS HERRAMIENTAS NATIVAS (Incluyendo CLANG ahora)
 sudo apt update || echo "⚠️ Apt update con errores leves"
 sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
     build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache \
-    gn ninja-build nasm
+    gn ninja-build nasm clang lld
 
 # A. INSTALACIÓN MANUAL NODE.JS v20 (Bypass APT)
 echo ">>> 🔨 INSTALANDO NODE v20 (Manual)..."
@@ -40,7 +40,7 @@ echo "✅ Versiones Sistema:"
 echo "Node: $(node -v)"
 echo "Rust: $(rustc --version)"
 echo "Ninja: $(ninja --version)"
-echo "GN: $(gn --version)"
+echo "Clang: $(clang --version | head -n 1)"
 
 # --- 3. DEPOT TOOLS ---
 if [ ! -d "depot_tools" ]; then
@@ -96,9 +96,8 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=i386
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64
 python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 
-# PARCHE PARA SCRIPT DE GOOGLE
-sed -i 's/apt_update(options)/# apt_update(options)/' build/install-build-deps.py
-./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia en dependencias Google"
+# Instalación de dependencias (Sin el sed que rompe python)
+./build/install-build-deps.sh --android --no-prompt || echo "⚠️ Advertencia en dependencias Google (Ignorable si tenemos clang sistema)"
 
 # ==========================================
 # 🛡️ ZONA DE REEMPLAZO DE HERRAMIENTAS (FIX MASIVO)
@@ -123,41 +122,54 @@ else
     cp -r /usr/lib/rustlib "$RUST_GOOGLE/"
 fi
 
-# 3. FIX GN (Nuevo)
+# 3. FIX GN
 echo ">>> 🔧 FIX: Verificando GN..."
 GN_GOOGLE="buildtools/linux64/gn"
-# Si existe y NO es ARM (file devuelve x86-64), lo reemplazamos
 if [ -f "$GN_GOOGLE" ]; then
     if file "$GN_GOOGLE" | grep -q "x86-64"; then
-        echo "   ⚠️ GN de Google es incompatible (x86). Reemplazando con el del sistema..."
+        echo "   ⚠️ GN incompatible (x86). Reemplazando..."
         rm -f "$GN_GOOGLE"
         ln -sf /usr/bin/gn "$GN_GOOGLE"
     else
-        echo "   ✅ GN de Google parece compatible."
+        echo "   ✅ GN compatible."
     fi
 fi
 
-# 4. FIX NINJA (Nuevo)
+# 4. FIX NINJA
 echo ">>> 🔧 FIX: Verificando Ninja..."
 NINJA_GOOGLE="third_party/ninja/ninja"
 if [ -f "$NINJA_GOOGLE" ]; then
     if file "$NINJA_GOOGLE" | grep -q "x86-64"; then
-        echo "   ⚠️ Ninja de Google es incompatible (x86). Reemplazando con el del sistema..."
+        echo "   ⚠️ Ninja incompatible (x86). Reemplazando..."
         rm -f "$NINJA_GOOGLE"
         ln -sf /usr/bin/ninja "$NINJA_GOOGLE"
     else
-        echo "   ✅ Ninja de Google parece compatible."
+        echo "   ✅ Ninja compatible."
     fi
 fi
 
-# 5. FIX CLANG (Verificación)
-echo ">>> 🔧 Verificando Clang..."
-CLANG_BIN="third_party/llvm-build/Release+Asserts/bin/clang"
-if [ -f "$CLANG_BIN" ]; then
-    file "$CLANG_BIN"
-    # Nota: Si Clang es incorrecto, el fix es más complejo, pero gclient suele bajar el correcto para ARM.
+# 5. FIX CLANG (CRÍTICO - NUEVO)
+echo ">>> 🔧 FIX: Verificando Clang..."
+LLVM_BIN_DIR="third_party/llvm-build/Release+Asserts/bin"
+CLANG_GOOGLE="$LLVM_BIN_DIR/clang"
+
+# Si el clang de Google es x86-64, lo matamos
+if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
+    echo "   ⚠️ ALERTA: Clang de Google es x86-64 (INCOMPATIBLE). Iniciando trasplante..."
+    
+    # Borramos los binarios conflictivos
+    rm -f "$LLVM_BIN_DIR/clang"
+    rm -f "$LLVM_BIN_DIR/clang++"
+    rm -f "$LLVM_BIN_DIR/lld"
+    
+    # Enlazamos a los del sistema
+    ln -sf /usr/bin/clang "$LLVM_BIN_DIR/clang"
+    ln -sf /usr/bin/clang++ "$LLVM_BIN_DIR/clang++"
+    ln -sf /usr/bin/lld "$LLVM_BIN_DIR/lld"
+    
+    echo "   ✅ Trasplante de Clang completado."
 else
-    echo "⚠️ No se encontró Clang, se intentará usar."
+    echo "   ✅ Clang parece correcto o ya fue parcheado."
 fi
 # ==========================================
 
@@ -212,6 +224,11 @@ v8_snapshot_toolchain = "//build/toolchain/linux:clang_arm64"
 enable_android_secondary_abi = false
 include_both_v8_snapshots = false
 
+# Fix para Clang del sistema (evita que busque librerías en rutas raras)
+clang_use_chrome_plugins = false
+linux_use_bundled_binutils = false
+use_custom_libcxx = false   # Usar libc++ del sistema si es necesario
+
 # --- MATAR SISO / ACTIVAR NINJA CLASSIC ---
 use_siso = false
 use_remoteexec = false
@@ -250,7 +267,7 @@ EOF
 
 # --- 7. COMPILAR Y FIRMAR ---
 echo ">>> Compilando con Ninja (Classic)..."
-# Forzamos PATH: Cargo(Rust) + Node Local + Sistema + Depot Tools
+# Forzamos PATH
 export PATH=$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH
 
 gn gen out/Default
