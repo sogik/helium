@@ -22,6 +22,7 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+          clean: false
 
       - name: Update Sources (Force Sync)
         run: |
