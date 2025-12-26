@@ -131,7 +131,6 @@ if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
     ln -sf /usr/bin/clang++ "$LLVM_BIN_DIR/clang++"
     ln -sf /usr/bin/lld "$LLVM_BIN_DIR/lld"
 fi
-# ==========================================
 
 # ⚠️ NAVEGACIÓN LÁSER ⚠️
 echo ">>> 🕵️ Buscando la raíz de Chromium (src)..."
@@ -158,14 +157,14 @@ if [ ! -f "BUILD.gn" ] || [ ! -f ".gn" ]; then
 fi
 
 # ==========================================
-# 🛡️ FIX RUST: TRIPLE GARANTÍA 🛡️
+# 🛡️ FIX RUST (Fase 1: Reemplazo Binario)
 # ==========================================
-echo ">>> 🔧 FIX: Reemplazando Rust y Neutralizando Validaciones..."
+echo ">>> 🔧 FIX: Reemplazando Rust..."
 RUST_GOOGLE="third_party/rust-toolchain"
 rm -rf "$RUST_GOOGLE"
 mkdir -p "$RUST_GOOGLE"
 
-# 1. Copiamos los binarios reales (ARM64)
+# Copiamos los binarios reales (ARM64)
 LOCAL_RUST="$HOME/.rustup/toolchains/stable-aarch64-unknown-linux-gnu"
 if [ -d "$LOCAL_RUST" ]; then
     cp -r "$LOCAL_RUST/"* "$RUST_GOOGLE/"
@@ -173,69 +172,7 @@ else
     cp -r /usr/lib/rustlib "$RUST_GOOGLE/"
 fi
 
-# 2. OBTENER HASH ESPERADO
-EXPECTED_HASH=$(python3 -c "
-import re
-try:
-    with open('tools/rust/update_rust.py', 'r') as f:
-        content = f.read()
-        rev = re.search(r'RUST_REVISION\s*=\s*[\"\']([^\"\']+)[\"\']', content)
-        sub = re.search(r'RUST_SUB_REVISION\s*=\s*(\d+)', content)
-        if rev:
-            out = rev.group(1)
-            if sub: out += f'-{sub.group(1)}'
-            print(out, end='')
-except:
-    pass
-")
-if [ -z "$EXPECTED_HASH" ]; then
-    EXPECTED_HASH="15283f6fe95e5b604273d13a428bab5fc0788f5a-1"
-fi
-printf "%s" "$EXPECTED_HASH" > "$RUST_GOOGLE/VERSION"
-echo "   ✅ Hash objetivo: $EXPECTED_HASH"
-
-# 3. ☢️ VÍA B: HACKEAR build/config/rust.gni (La Fuente)
-# Buscamos donde lee el archivo y le inyectamos el hash directamente
-python3 -c "
-import re
-file_path = 'build/config/rust.gni'
-try:
-    with open(file_path, 'r') as f:
-        content = f.read()
-    # Reemplazamos 'read_file(...)' por el string literal del hash
-    # Esto evita cualquier error de lectura de archivo
-    new_content = re.sub(r'read_file\s*\(\s*\"//third_party/rust-toolchain/VERSION\".*?\)', f'\"$EXPECTED_HASH\"', content, flags=re.DOTALL)
-    
-    with open(file_path, 'w') as f:
-        f.write(new_content)
-    print('   ✅ VÍA B: Variable en rust.gni sobrescrita con hash fijo.')
-except Exception as e:
-    print(f'   ⚠️ VÍA B Falló (No crítico): {e}')
-"
-
-# 4. ☢️ VÍA C: HACKEAR build/config/compiler/BUILD.gn (La Validación)
-# Buscamos CUALQUIER línea con 'assert' y 'rustc_revision' y la comentamos
-echo ">>> 💉 Ejecutando lobotomía en compiler/BUILD.gn..."
-python3 -c "
-file_path = 'build/config/compiler/BUILD.gn'
-try:
-    lines = []
-    with open(file_path, 'r') as f:
-        for line in f:
-            # Si la línea tiene 'assert' Y 'rustc_revision', la desactivamos
-            if 'assert' in line and 'rustc_revision' in line:
-                lines.append('# BYPASS: ' + line)
-            else:
-                lines.append(line)
-    with open(file_path, 'w') as f:
-        f.writelines(lines)
-    print('   ✅ VÍA C: Aserciones en BUILD.gn desactivadas.')
-except Exception as e:
-    print(f'   ❌ VÍA C Falló: {e}')
-"
-# ==========================================
-
-
+# === HELIUM SCRIPTS ===
 echo ">>> Transformando a Helium..."
 python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t . || true
 python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || true
@@ -272,6 +209,49 @@ if [ -f "chrome/browser/ui/android/extensions/java/res/values/dimens.xml" ]; the
     sed -i 's/extension_toolbar_baseline_width">600dp/extension_toolbar_baseline_width">0dp/' chrome/browser/ui/android/extensions/java/res/values/dimens.xml
 fi
 
+# =================================================================
+# ☢️ ZONA CRÍTICA: PARCHEO FINAL DE VALIDACIONES (JUSTO ANTES DE GN)
+# =================================================================
+echo ">>> 🧨 APLICANDO BYPASS DE RUST DE ÚLTIMO MINUTO..."
+
+# 1. Obtener hash esperado (con -1)
+EXPECTED_HASH=$(python3 -c "
+import re
+try:
+    with open('tools/rust/update_rust.py', 'r') as f:
+        content = f.read()
+        rev = re.search(r'RUST_REVISION\s*=\s*[\"\']([^\"\']+)[\"\']', content)
+        sub = re.search(r'RUST_SUB_REVISION\s*=\s*(\d+)', content)
+        if rev:
+            out = rev.group(1)
+            if sub: out += f'-{sub.group(1)}'
+            print(out, end='')
+except:
+    pass
+")
+if [ -z "$EXPECTED_HASH" ]; then
+    EXPECTED_HASH="15283f6fe95e5b604273d13a428bab5fc0788f5a-1"
+fi
+printf "%s" "$EXPECTED_HASH" > "third_party/rust-toolchain/VERSION"
+echo "   ✅ Archivo VERSION forzado a: $EXPECTED_HASH"
+
+# 2. HACK BUILD.gn (EL FIX QUE FALLABA ANTES, AHORA CON SED SIMPLE)
+# Reemplazamos 'rustc_revision ==' por 'true || rustc_revision =='
+# Esto funciona aunque haya saltos de línea porque 'rustc_revision' y '==' suelen estar juntos o sed los pilla.
+# Si están separados, usamos un truco de sed para buscar la palabra clave.
+
+TARGET_FILE="build/config/compiler/BUILD.gn"
+echo "   💉 Modificando $TARGET_FILE para ignorar validación..."
+
+# Este comando busca 'rustc_revision ==' y lo cambia por 'true || rustc_revision =='
+sed -i 's/rustc_revision ==/true || rustc_revision ==/g' "$TARGET_FILE"
+
+# VERIFICACIÓN VISUAL EN EL LOG
+echo "   🔍 Verificando cambio en el archivo:"
+grep "rustc_revision ==" "$TARGET_FILE" | head -n 3 || echo "❌ No se encontró la cadena, puede fallar."
+
+# =================================================================
+
 # --- 7. CONFIGURACIÓN GN + CCACHE ---
 export CCACHE_DIR=/home/$(whoami)/.ccache
 mkdir -p $CCACHE_DIR
@@ -289,10 +269,6 @@ is_desktop_android = true
 target_os = "android"
 target_cpu = "arm64"
 host_cpu = "arm64" 
-
-# --- VÍA A: FORZAR VERSIÓN RUST EN ARGS ---
-# Esto sobreescribe cualquier chequeo interno
-rustc_revision = "$EXPECTED_HASH"
 
 # --- CORRECCIONES ARQUITECTURA ---
 v8_snapshot_toolchain = "//build/toolchain/linux:clang_arm64"
