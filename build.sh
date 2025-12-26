@@ -5,7 +5,7 @@ source common.sh
 set_keys
 sudo apt-get clean
 
-# AUMENTAR LÍMITES DEL SISTEMA (Vital para compilación masiva)
+# AUMENTAR LÍMITES DEL SISTEMA
 ulimit -n 4096
 
 export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
@@ -15,8 +15,9 @@ export DEBIAN_FRONTEND=noninteractive
 # --- 2. PREPARACIÓN UBUNTU ARM + CCACHE ---
 echo ">>> Sistema detectado: Ubuntu ARM64 (Ampere)"
 sudo apt update
+# AÑADIDO: 'nodejs' para poder usar el binario del sistema
 sudo apt install -y sudo lsb-release file nano git curl python3 python3-pillow \
-    build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache
+    build-essential python3-dev libncurses5 openjdk-17-jdk-headless ccache nodejs
 
 # --- 3. DEPOT TOOLS ---
 if [ ! -d "depot_tools" ]; then
@@ -75,6 +76,19 @@ python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
 rm -rf third_party/angle/third_party/VK-GL-CTS/
 ./build/install-build-deps.sh --android --no-prompt
 
+# --- FIX CRÍTICO: REEMPLAZAR NODE.JS INTEL POR ARM DEL SISTEMA ---
+echo ">>> FIX: Reemplazando Node.js x64 por versión del sistema (ARM64)..."
+NODE_TARGET="third_party/node/linux/node-linux-x64/bin/node"
+if [ -f "$NODE_TARGET" ]; then
+    rm "$NODE_TARGET"
+    # Creamos un enlace simbólico al node de Ubuntu
+    ln -s /usr/bin/node "$NODE_TARGET"
+    echo "✅ Node.js parcheado correctamente."
+else
+    echo "⚠️ No se encontró la ruta de Node.js esperada. Verificando..."
+fi
+# -----------------------------------------------------------------
+
 echo ">>> Transformando a Helium..."
 python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t .
 python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || echo "⚠️ Advertencia versión"
@@ -109,15 +123,12 @@ mkdir -p $CCACHE_DIR
 export CCACHE_MAXSIZE=30G 
 echo ">>> Usando CCache en: $CCACHE_DIR"
 
-# --- LIMPIEZA DE EMERGENCIA (Fix para error Siso vs Ninja) ---
-# Si existe configuración antigua de Siso, borramos la carpeta out/Default
+# Limpieza automática si hay conflicto
 if [ -f "out/Default/.siso_config" ] || [ -f "out/Default/build.ninja.stamp" ]; then
     echo "⚠️ DETECTADO RASTRO DE SISO O COMPILACIÓN CORRUPTA."
-    echo ">>> Limpiando out/Default para compilación limpia con Ninja..."
     rm -rf out/Default
 fi
 mkdir -p out/Default
-# -------------------------------------------------------------
 
 cat > out/Default/args.gn <<EOF
 chrome_public_manifest_package = "io.github.jqssun.helium"
