@@ -109,6 +109,16 @@ mkdir -p $CCACHE_DIR
 export CCACHE_MAXSIZE=30G 
 echo ">>> Usando CCache en: $CCACHE_DIR"
 
+# --- LIMPIEZA DE EMERGENCIA (Fix para error Siso vs Ninja) ---
+# Si existe configuración antigua de Siso, borramos la carpeta out/Default
+if [ -f "out/Default/.siso_config" ] || [ -f "out/Default/build.ninja.stamp" ]; then
+    echo "⚠️ DETECTADO RASTRO DE SISO O COMPILACIÓN CORRUPTA."
+    echo ">>> Limpiando out/Default para compilación limpia con Ninja..."
+    rm -rf out/Default
+fi
+mkdir -p out/Default
+# -------------------------------------------------------------
+
 cat > out/Default/args.gn <<EOF
 chrome_public_manifest_package = "io.github.jqssun.helium"
 is_desktop_android = true 
@@ -124,7 +134,6 @@ include_both_v8_snapshots = false
 # --- MATAR SISO / ACTIVAR NINJA CLASSIC ---
 use_siso = false
 use_remoteexec = false
-use_goma = false
 
 # OPTIMIZACIONES
 cc_wrapper = "ccache"
@@ -161,7 +170,6 @@ EOF
 # --- 7. COMPILAR Y FIRMAR ---
 echo ">>> Compilando con Ninja (Classic)..."
 gn gen out/Default
-# CAMBIO: Usamos 'ninja' directo en lugar de 'autoninja' para evitar que lance Siso
 ninja -C out/Default chrome_public_apk
 
 # USAR JAVA DEL SISTEMA
