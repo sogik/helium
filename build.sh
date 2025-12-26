@@ -144,7 +144,7 @@ if [ -f "$CLANG_GOOGLE" ] && file "$CLANG_GOOGLE" | grep -q "x86-64"; then
 fi
 # ==========================================
 
-# ⚠️ NAVEGACIÓN LÁSER & AUTO-REPARACIÓN ⚠️
+# ⚠️ NAVEGACIÓN LÁSER ⚠️
 echo ">>> 🕵️ Buscando la raíz de Chromium (src)..."
 SRC_PATH=$(find /home/ubuntu/actions-runner -type f -path "*/chromium/src/chrome/VERSION" -print -quit)
 
@@ -157,24 +157,34 @@ REAL_SRC_DIR="${SRC_PATH%/chrome/VERSION}"
 cd "$REAL_SRC_DIR"
 echo ">>> 📍 Raíz confirmada en: $(pwd)"
 
-# === PASO DE EMERGENCIA: RECUPERAR ARCHIVOS PERDIDOS ===
-if [ ! -f ".gn" ]; then
-    echo "⚠️ .gn no encontrado. Intentando recuperarlo con Git..."
-    git checkout HEAD -- .gn || echo "⚠️ No se pudo recuperar .gn (¿Quizás commit corrupto?)"
+# === 🚑 RESURRECCIÓN DE ARCHIVOS PERDIDOS (GIT RESET) ===
+if [ ! -f "BUILD.gn" ] || [ ! -f ".gn" ]; then
+    echo "🚨 ALERTA: Faltan archivos vitales (BUILD.gn o .gn). Iniciando reparación..."
     
-    # Intento 2: Si git falla, creamos uno básico para que GN no explote
-    if [ ! -f ".gn" ]; then
-        echo "⚠️ Creando .gn de emergencia..."
-        echo 'buildconfig = "//build/config/BUILDCONFIG.gn"' > .gn
+    # 1. Intentamos reset suave (Hard Reset)
+    echo ">>> Ejecutando 'git reset --hard HEAD' para recuperar archivos..."
+    git reset --hard HEAD
+    
+    # 2. Si sigue faltando, es que gclient falló catastróficamente
+    if [ ! -f "BUILD.gn" ]; then
+        echo ">>> ⚠️ El reset de Git no bastó. Forzando reparación con gclient..."
+        cd .. # Subimos a chromium/
+        gclient sync -D --force --reset --nohooks
+        cd src # Volvemos a src/
     fi
+    
+    if [ -f "BUILD.gn" ]; then
+        echo "✅ BUILD.gn recuperado con éxito."
+    else
+        echo "❌ ERROR FATAL: No se pudo recuperar BUILD.gn. El repositorio está corrupto."
+        exit 1
+    fi
+else
+    echo "✅ Archivos de estructura (BUILD.gn) detectados correctamente."
 fi
-
-# Diagnóstico visual
-echo "📂 Contenido de la raíz:"
-ls -la .gn BUILD.gn chrome/VERSION
+# ========================================================
 
 echo ">>> Transformando a Helium..."
-# Usamos || true para ignorar errores si ya se ejecutó
 python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t . || true
 python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree . || true
 python3 "${SCRIPT_DIR}/helium/utils/generate_resources.py" "${SCRIPT_DIR}/helium/resources/generate_resources.txt" "${SCRIPT_DIR}/helium/resources" || true
@@ -280,7 +290,7 @@ export PATH=$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH
 
 # Verificación final
 if [ ! -f "out/Default/args.gn" ]; then
-    echo "❌ ERROR CRÍTICO: args.gn no existe. Falló la navegación."
+    echo "❌ ERROR CRÍTICO: args.gn no existe."
     exit 1
 fi
 
